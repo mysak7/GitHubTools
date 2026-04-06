@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Find all git repos under the given path (default: current dir)
-ROOT="${1:-.}"
+ROOT="${1:-..}"
 
 find "$ROOT" -name ".git" -type d | sort | while IFS= read -r gitdir; do
     dir="${gitdir%/.git}"
