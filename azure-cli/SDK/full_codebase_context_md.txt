@@ -1,0 +1,640 @@
+
+================================================================================
+FILE START: az-hub-spoke-sdk.md
+================================================================================
+
+# az-hub-spoke — Azure SDK
+
+Projekt: enterprise Hub-and-Spoke síť v Azure (Terraform + CLI bootstrap)
+Repo: `az-hub-spoke`
+
+---
+
+## Python SDK v tomto projektu
+
+Projekt `az-hub-spoke` **nepoužívá Python Azure SDK**. Celá infrastruktura je deklarativní Terraform (`azurerm` provider) a jednorázový bootstrap přes Azure CLI.
+
+---
+
+## Proč ne SDK?
+
+| Vrstva | Nástroj | Důvod |
+|--------|---------|-------|
+| Síťová infrastruktura (VNet, Firewall, Bastion) | Terraform `azurerm` | Deklarativní, idempotentní, state management |
+| Bootstrap (storage pro tfstate) | Azure CLI | Jednorázový skript, žádná aplikace |
+| Runtime aplikace | — | Projekt nemá backend aplikaci |
+
+---
+
+## Co Terraform `azurerm` provider dělá místo SDK
+
+```hcl
+# modules/hub_network/main.tf
+resource "azurerm_virtual_network" "hub" {
+  name                = "vnet-hub-${var.prefix}-${var.environment}"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  address_space       = [var.hub_address_space]
+  tags                = local.tags
+}
+
+resource "azurerm_subnet" "firewall" {
+  name                 = "AzureFirewallSubnet"
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = azurerm_virtual_network.hub.name
+  address_prefixes     = [var.firewall_subnet_prefix]
+}
+```
+
+```hcl
+# modules/firewall/main.tf
+resource "azurerm_firewall" "main" {
+  name                = "afw-${var.prefix}-${var.environment}"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  sku_name            = "AZFW_VNet"
+  sku_tier            = "Standard"
+  firewall_policy_id  = azurerm_firewall_policy.main.id
+  tags                = var.tags
+
+  ip_configuration {
+    name                 = "ipconfig"
+    subnet_id            = var.firewall_subnet_id
+    public_ip_address_id = azurerm_public_ip.firewall.id
+  }
+}
+```
+
+```hcl
+# modules/peering/main.tf — obousměrný VNet Peering
+resource "azurerm_virtual_network_peering" "hub_to_spoke" {
+  name                      = "peer-hub-to-${var.spoke_name}"
+  resource_group_name       = var.hub_resource_group_name
+  virtual_network_name      = var.hub_vnet_name
+  remote_virtual_network_id = var.spoke_vnet_id
+  allow_forwarded_traffic   = true
+  allow_gateway_transit     = true
+}
+
+resource "azurerm_virtual_network_peering" "spoke_to_hub" {
+  name                      = "peer-${var.spoke_name}-to-hub"
+  resource_group_name       = var.spoke_resource_group_name
+  virtual_network_name      = var.spoke_vnet_name
+  remote_virtual_network_id = var.hub_vnet_id
+  allow_forwarded_traffic   = true
+  use_remote_gateways       = false
+}
+```
+
+```hcl
+# modules/private_dns/main.tf
+resource "azurerm_private_dns_zone" "blob" {
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = var.resource_group_name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "hub" {
+  name                  = "link-hub"
+  resource_group_name   = var.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.blob.name
+  virtual_network_id    = var.hub_vnet_id
+  registration_enabled  = false
+}
+```
+
+---
+
+## Kdy použít SDK vs Terraform
+
+Pokud by projekt měl runtime komponentu (API, worker), použil by SDK takto:
+
+```python
+# Hypotetická aplikace nasazená do tohoto Hub-Spoke prostředí
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.network import NetworkManagementClient
+
+credential = DefaultAzureCredential()   # Managed Identity na VM v spoke subnetu
+client = NetworkManagementClient(credential, subscription_id)
+
+# Výpis VNet peeringu
+for peering in client.virtual_network_peerings.list(rg_name, vnet_name):
+    print(peering.name, peering.peering_state)
+```
+
+Pro infrastrukturní projekty bez runtime aplikace je **Terraform + CLI dostačující** a vhodnější než SDK.
+
+
+================================================================================
+FILE END: az-hub-spoke-sdk.md
+================================================================================
+
+================================================================================
+FILE START: az-llm-aks-sdk.md
+================================================================================
+
+# az-llm-aks — Azure SDK
+
+Projekt: LLM inference na AKS Spot uzlech — Ollama na Karpenter-provisioned CPU nodech, sdílená BlobFuse2 cache modelů.
+Repo: `az-llm-aks` — `api/routes/cache.py`, `api/routes/models.py`, `api/routes/inventory.py`
+
+---
+
+## Použité SDK balíčky
+
+```
+azure-identity          # DefaultAzureCredential (Workload Identity na AKS)
+azure-storage-blob      # BlobServiceClient — sdílená cache modelů
+azure-cosmos            # CosmosClient — registr LLM modelů
+azure-mgmt-compute      # ComputeManagementClient — Spot VM quota, SKU data
+```
+
+---
+
+## 1. Blob Storage — sdílená cache Ollama modelů
+
+```python
+# api/routes/cache.py
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
+import os
+
+_blob_svc: BlobServiceClient | None = None
+
+def _container():
+    global _blob_svc
+    if _blob_svc is None:
+        account = os.environ["BLOB_STORAGE_ACCOUNT"]
+        _blob_svc = BlobServiceClient(
+            account_url=f"https://{account}.blob.core.windows.net",
+            credential=DefaultAzureCredential(),   # Workload Identity na AKS podu
+        )
+    return _blob_svc.get_container_client(
+        os.environ.get("BLOB_CONTAINER_NAME", "ollama-models")
+    )
+```
+
+Na AKS s Workload Identity: `DefaultAzureCredential` automaticky použije OIDC token podu
+(žádný secret, žádný klíč — čistá federovaná identita).
+
+---
+
+## 2. Listing blobů — výpis stažených modelů
+
+```python
+# api/routes/cache.py — GET /cache/
+@router.get("/")
+async def list_cache():
+    ctr = _container()
+    models = []
+
+    # Manifest soubory = seznam stažených modelů
+    prefix = "manifests/registry.ollama.ai/library/"
+    for blob in ctr.list_blobs(name_starts_with=prefix):
+        rel = blob.name[len(prefix):]
+        parts = rel.split("/")
+        if len(parts) == 2:
+            models.append({
+                "model": parts[0],
+                "tag":   parts[1],
+                "manifest_path": blob.name,
+                "last_modified": blob.last_modified.isoformat(),
+            })
+
+    # Celková velikost blob vrstev
+    blobs_total = sum(
+        blob.size or 0
+        for blob in ctr.list_blobs(name_starts_with="blobs/")
+    )
+    return {"models": models, "blobs_total_bytes": blobs_total}
+```
+
+Ollama ukládá modely jako OCI artefakty: `manifests/{registry}/{model}/{tag}` + `blobs/{digest}`.
+
+---
+
+## 3. Smazání modelu z cache (manifest + bloby)
+
+```python
+# api/routes/cache.py — DELETE /cache/models/{model}/{tag}
+@router.delete("/models/{model}/{tag}", status_code=204)
+async def delete_cached_model(model: str, tag: str):
+    ctr = _container()
+    manifest_path = f"manifests/registry.ollama.ai/library/{model}/{tag}"
+
+    # Přečti manifest — obsahuje seznam digestů (config + layers)
+    bc = ctr.get_blob_client(manifest_path)
+    raw = bc.download_blob().readall()
+    manifest = json.loads(raw)
+
+    digests: set[str] = set()
+    if "config" in manifest:
+        digests.add(manifest["config"]["digest"].replace(":", "-"))
+    for layer in manifest.get("layers", []):
+        digests.add(layer["digest"].replace(":", "-"))
+
+    bc.delete_blob()   # smaž manifest
+
+    for digest in digests:
+        try:
+            ctr.get_blob_client(f"blobs/{digest}").delete_blob()
+        except Exception:
+            pass        # blob mohl být sdílený s jiným modelem
+```
+
+---
+
+## 4. Spuštění K8s Job pro stažení modelu do cache
+
+```python
+# api/routes/cache.py — POST /cache/pull
+from kubernetes import client, config
+
+def _k8s_batch() -> client.BatchV1Api:
+    try:
+        config.load_incluster_config()     # uvnitř AKS podu
+    except config.ConfigException:
+        config.load_kube_config()          # lokální kubectl kontext
+    return client.BatchV1Api()
+
+@router.post("/pull", status_code=202)
+async def pull_model_to_cache(model: str, tag: str = "latest"):
+    job_name = f"cache-pull-{model}-{tag}-{int(time.time()) % 100000}"
+
+    job = {
+        "apiVersion": "batch/v1", "kind": "Job",
+        "metadata": {"name": job_name, "namespace": "default"},
+        "spec": {
+            "ttlSecondsAfterFinished": 7200,
+            "backoffLimit": 0,
+            "template": {
+                "spec": {
+                    "restartPolicy": "Never",
+                    "tolerations": [
+                        # Tolerace pro Karpenter Spot uzly
+                        {"key": "kubernetes.azure.com/scalesetpriority",
+                         "operator": "Equal", "value": "spot", "effect": "NoSchedule"},
+                    ],
+                    "containers": [{
+                        "name": "pull",
+                        "image": "ollama/ollama:latest",
+                        "command": ["/bin/sh", "-c",
+                            f"ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done "
+                            f"&& ollama pull {model}:{tag}"],
+                        "volumeMounts": [{"name": "cache", "mountPath": "/cache"}],
+                    }],
+                    "volumes": [{"name": "cache",
+                        "persistentVolumeClaim": {"claimName": "ollama-models-pvc-rw"}}],
+                }
+            },
+        },
+    }
+    _k8s_batch().create_namespaced_job(namespace="default", body=job)
+    return {"job": job_name, "model": f"{model}:{tag}"}
+```
+
+---
+
+## 5. Cosmos DB — registr LLM modelů
+
+```python
+# api/routes/models.py
+from azure.cosmos import CosmosClient, exceptions
+from azure.identity import DefaultAzureCredential
+import os
+
+_cosmos_client: CosmosClient | None = None
+
+def get_container():
+    global _cosmos_client
+    if _cosmos_client is None:
+        key = os.environ.get("COSMOS_KEY")
+        # Fallback na Workload Identity pokud klíč není nastaven
+        credential = key if key else DefaultAzureCredential()
+        _cosmos_client = CosmosClient(
+            url=os.environ["COSMOS_ENDPOINT"],
+            credential=credential,
+        )
+    return _cosmos_client \
+        .get_database_client("az-llm-aks") \
+        .get_container_client("models")
+```
+
+**CRUD operace:**
+```python
+# Výpis všech modelů
+def list_models():
+    container = get_container()
+    return list(container.query_items(
+        "SELECT * FROM c",
+        enable_cross_partition_query=True
+    ))
+
+# Čtení jednoho modelu (point read — nejlevnější operace v Cosmos)
+def get_model(model_id: str):
+    try:
+        return container.read_item(item=model_id, partition_key=model_id)
+    except exceptions.CosmosResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+# Vytvoření
+def create_model(model: dict):
+    container.create_item(body=model)
+
+# Partial update
+def patch_model(model_id: str, updates: dict):
+    item = container.read_item(item=model_id, partition_key=model_id)
+    item.update(updates)
+    container.replace_item(item=model_id, body=item)
+```
+
+---
+
+## 6. Compute Management — Spot VM quota a SKU data
+
+```python
+# api/routes/inventory.py
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.compute import ComputeManagementClient
+
+SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID")
+REGION = "westus2"
+
+def get_spot_vcpu_limit() -> int | None:
+    credential = DefaultAzureCredential()
+    client = ComputeManagementClient(credential, SUBSCRIPTION_ID)
+
+    for usage in client.usage.list(location=REGION):
+        if (getattr(usage.name, "value", None) or "").lower() == "lowprioritycores":
+            return usage.limit   # celkový limit Spot vCPU pro subscription v regionu
+    return None
+
+def get_available_vm_sizes() -> set[str]:
+    credential = DefaultAzureCredential()
+    client = ComputeManagementClient(credential, SUBSCRIPTION_ID)
+
+    available: set[str] = set()
+    for sku in client.resource_skus.list(filter=f"location eq '{REGION}'"):
+        if sku.resource_type != "virtualMachines":
+            continue
+        restricted = any(
+            r.reason_code in ("NotAvailableForSubscription", "QuotaId")
+            for r in (sku.restrictions or [])
+        )
+        if not restricted:
+            available.add(sku.name.lower())
+    return available
+```
+
+`client.usage.list(location=)` — vrátí všechny quotas v regionu (vCPU, cores, rodiny SKU).
+`client.resource_skus.list()` — stránkovaný iterátor přes všechna dostupná SKU v subscription.
+
+---
+
+## Workload Identity — jak funguje na AKS
+
+```
+Terraform vytvoří:
+  azurerm_user_assigned_identity "control-plane"
+  azurerm_federated_identity_credential → váže K8s ServiceAccount na UAMI
+  azurerm_role_assignment → Storage Blob Data Contributor na Blob container
+
+K8s manifest:
+  serviceAccountName: control-plane-sa   (s annotation azure.workload.identity/client-id)
+
+Pod:
+  DefaultAzureCredential()
+    → detekuje AZURE_CLIENT_ID z env
+    → použije OIDC projected volume token
+    → vymění za Azure AD access token
+    → žádný secret, žádný klíč nikde
+```
+
+
+================================================================================
+FILE END: az-llm-aks-sdk.md
+================================================================================
+
+================================================================================
+FILE START: azure-penny-sdk.md
+================================================================================
+
+# azure-penny — Azure SDK
+
+Projekt: serverless cost management dashboard — čte Cost Management exporty z Blob Storage, servuje přes FastAPI na Azure Container Apps se scale-to-zero.
+Repo: `azure-penny` — `storage.py`, `live_resources.py`
+
+---
+
+## Použité SDK balíčky
+
+```
+azure-identity          # DefaultAzureCredential
+azure-storage-blob      # BlobServiceClient
+azure-mgmt-resource     # ResourceManagementClient
+azure-mgmt-compute      # ComputeManagementClient
+azure-mgmt-storage      # StorageManagementClient
+```
+
+---
+
+## 1. Autentifikace — Managed Identity s client_id
+
+```python
+# storage.py
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
+
+# AZURE_CLIENT_ID = User Assigned Managed Identity přiřazená Container Appu přes Terraform
+credential = DefaultAzureCredential(
+    managed_identity_client_id=AZURE_CLIENT_ID or None
+)
+account_url = f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net"
+_blob_client = BlobServiceClient(account_url=account_url, credential=credential)
+```
+
+`managed_identity_client_id` — nutné u User Assigned Managed Identity (systémová MI client_id nepotřebuje).
+Lokálně `DefaultAzureCredential` automaticky použije `az login`.
+
+---
+
+## 2. Blob Storage — lazy singleton klient
+
+```python
+# storage.py
+_blob_client: BlobServiceClient | None = None
+
+def get_blob_service_client() -> BlobServiceClient:
+    global _blob_client
+    if _blob_client is None:
+        credential = DefaultAzureCredential(
+            managed_identity_client_id=AZURE_CLIENT_ID or None
+        )
+        account_url = f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net"
+        _blob_client = BlobServiceClient(account_url=account_url, credential=credential)
+        log.info("BlobServiceClient initialised for account: %s", STORAGE_ACCOUNT_NAME)
+    return _blob_client
+```
+
+Singleton — jeden klient pro celý životní cyklus Container App instance.
+
+---
+
+## 3. Čtení Parquet souboru z Blob do pandas DataFrame
+
+```python
+import io
+import pandas as pd
+from azure.storage.blob import BlobServiceClient
+
+def load_parquet_from_blob(container: str, blob_name: str) -> pd.DataFrame:
+    client = get_blob_service_client()
+    blob = client.get_blob_client(container=container, blob=blob_name)
+    data = blob.download_blob().readall()          # bytes
+    return pd.read_parquet(io.BytesIO(data))       # DataFrame
+```
+
+`io.BytesIO` — obalí bytes do file-like objektu, který pandas umí číst.
+
+---
+
+## 4. Listing blobů — discovery Cost Management exportů
+
+```python
+def list_cost_exports(container: str, prefix: str = "") -> list[str]:
+    client = get_blob_service_client()
+    ctr = client.get_container_client(container)
+    return [
+        blob.name
+        for blob in ctr.list_blobs(name_starts_with=prefix)
+        if blob.name.endswith(".parquet") or blob.name.endswith(".csv")
+    ]
+```
+
+Azure Cost Management exportuje do struktury: `{scope}/{date}/{filename}.parquet`.
+
+---
+
+## 5. Management SDK — inventář ARM zdrojů
+
+```python
+# live_resources.py
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.resource import ResourceManagementClient
+from azure.mgmt.compute import ComputeManagementClient
+from azure.mgmt.storage import StorageManagementClient
+
+_resource_mgmt_client: ResourceManagementClient | None = None
+_compute_mgmt_client: ComputeManagementClient | None = None
+
+def _get_resource_mgmt_client() -> ResourceManagementClient:
+    global _resource_mgmt_client
+    if _resource_mgmt_client is None:
+        credential = DefaultAzureCredential(
+            managed_identity_client_id=AZURE_CLIENT_ID or None
+        )
+        _resource_mgmt_client = ResourceManagementClient(credential, AZURE_SUBSCRIPTION_ID)
+    return _resource_mgmt_client
+
+def _get_compute_mgmt_client() -> ComputeManagementClient:
+    global _compute_mgmt_client
+    if _compute_mgmt_client is None:
+        credential = DefaultAzureCredential(
+            managed_identity_client_id=AZURE_CLIENT_ID or None
+        )
+        _compute_mgmt_client = ComputeManagementClient(credential, AZURE_SUBSCRIPTION_ID)
+    return _compute_mgmt_client
+```
+
+---
+
+## 6. Výpis všech ARM zdrojů v subscription
+
+```python
+# live_resources.py — _fetch_resource_inventory()
+def _fetch_resource_inventory() -> list[dict]:
+    rc = _get_resource_mgmt_client()
+    all_res = list(rc.resources.list())
+    log.info("ARM inventory: %d resources found", len(all_res))
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "type": r.type,
+            "location": r.location,
+            "resource_group": r.id.split("/resourceGroups/")[1].split("/")[0],
+        }
+        for r in all_res
+    ]
+```
+
+`rc.resources.list()` — stránkovaný iterátor přes všechny zdroje v subscription (cross-RG).
+
+---
+
+## 7. VM power state přes Compute Management
+
+```python
+# live_resources.py
+def get_vm_power_state(rg: str, vm_name: str) -> str:
+    cc = _get_compute_mgmt_client()
+    # expand="instanceView" je nutné pro power state — základní GET ho nevrátí
+    inst = cc.virtual_machines.get(rg, vm_name, expand="instanceView")
+    statuses = inst.instance_view.statuses if inst.instance_view else []
+    power = next(
+        (s.display_status for s in statuses if s.code.startswith("PowerState/")),
+        "Unknown",
+    )
+    return power  # "VM running", "VM deallocated", "VM stopped", ...
+```
+
+`expand="instanceView"` — bez tohoto parametru API nevrátí `PowerState`.
+
+---
+
+## 8. Azure Retail Prices API — ceny bez SDK
+
+```python
+# live_resources.py — pro ceny VM Spot/On-demand
+import urllib.request, urllib.parse, json
+
+def fetch_spot_price(vm_size: str, region: str) -> float | None:
+    filter_str = (
+        f"armRegionName eq '{region}'"
+        f" and armSkuName eq '{vm_size}'"
+        " and priceType eq 'Consumption'"
+        " and contains(skuName,'Spot')"
+    )
+    url = (
+        "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview&$filter="
+        + urllib.parse.quote(filter_str)
+    )
+    with urllib.request.urlopen(url, timeout=8) as resp:
+        data = json.loads(resp.read())
+    items = data.get("Items") or []
+    return float(items[0]["retailPrice"]) if items else None
+```
+
+Azure Retail Prices API je veřejné, bez autentifikace — `urllib` stačí, SDK není potřeba.
+
+---
+
+## Architektura autentifikace v produkci
+
+```
+Container App
+  └── User Assigned Managed Identity (UAMI)
+        └── Role: Storage Blob Data Reader  →  Blob Storage (Cost Management exporty)
+        └── Role: Reader                    →  Subscription (ARM resource inventory)
+
+Terraform přiřadí UAMI k Container Appu:
+  identity { type = "UserAssigned", identity_ids = [azurerm_user_assigned_identity.app.id] }
+
+Aplikace:
+  DefaultAzureCredential(managed_identity_client_id=UAMI_CLIENT_ID)
+  → žádné secrets, žádné connection stringy v kódu ani v env vars
+```
+
+
+================================================================================
+FILE END: azure-penny-sdk.md
+================================================================================
