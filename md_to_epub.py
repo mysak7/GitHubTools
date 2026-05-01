@@ -6,6 +6,13 @@ import re
 import sys
 from pathlib import Path
 
+# --- config ---
+DEFAULT_AUTHOR = "Michal"
+DEFAULT_LANGUAGE = "cs"
+DEFAULT_INPUT_DIR = Path("md")
+DEFAULT_OUTPUT = Path("output.epub")
+# --------------
+
 try:
     import markdown
     from ebooklib import epub
@@ -19,11 +26,8 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
-def extract_title(md_text: str, fallback: str) -> str:
-    for line in md_text.splitlines():
-        if line.startswith("# "):
-            return line[2:].strip()
-    return fallback
+def filename_title(path: Path) -> str:
+    return path.stem
 
 
 def md_to_epub(
@@ -42,7 +46,7 @@ def md_to_epub(
 
     for i, path in enumerate(input_paths):
         md_text = path.read_text(encoding="utf-8")
-        chapter_title = extract_title(md_text, path.stem)
+        chapter_title = filename_title(path)
 
         if i == 0 and title is None:
             title = chapter_title
@@ -74,25 +78,26 @@ def md_to_epub(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert Markdown to EPUB")
-    parser.add_argument("inputs", nargs="+", type=Path, help="Markdown file(s)")
-    parser.add_argument("-o", "--output", type=Path, help="Output .epub path")
-    parser.add_argument("-t", "--title", help="Book title (default: first H1)")
-    parser.add_argument("-a", "--author", default="Unknown", help="Author name")
-    parser.add_argument("-l", "--language", default="en", help="Language code")
+    parser.add_argument("inputs", nargs="*", type=Path, help="Markdown file(s) or dirs (default: md/)")
+    parser.add_argument("-o", "--output", type=Path, help=f"Output .epub path (default: {DEFAULT_OUTPUT})")
+    parser.add_argument("-t", "--title", help="Book title (default: first filename)")
+    parser.add_argument("-a", "--author", default=DEFAULT_AUTHOR, help=f"Author name (default: {DEFAULT_AUTHOR})")
+    parser.add_argument("-l", "--language", default=DEFAULT_LANGUAGE, help=f"Language code (default: {DEFAULT_LANGUAGE})")
     args = parser.parse_args()
 
+    raw = args.inputs or [DEFAULT_INPUT_DIR]
     inputs: list[Path] = []
-    for p in args.inputs:
+    for p in raw:
         if p.is_dir():
             inputs.extend(sorted(p.glob("**/*.md")))
         else:
             inputs.append(p)
 
     if not inputs:
-        print("No Markdown files found.")
+        print(f"No Markdown files found in {raw}.")
         sys.exit(1)
 
-    output = args.output or (inputs[0].with_suffix(".epub") if len(inputs) == 1 else Path("output.epub"))
+    output = args.output or DEFAULT_OUTPUT
 
     md_to_epub(inputs, output, title=args.title, author=args.author, language=args.language)
 
