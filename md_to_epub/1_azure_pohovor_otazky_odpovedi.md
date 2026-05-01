@@ -123,3 +123,299 @@ VM by neměly mít veřejné IP adresy a přístup na ně by měl být povolen j
 Dobrá odpověď nebývá jen definice služby, ale krátký návrh postupu. Silná struktura odpovědi je: co bych použil, proč právě to, jaké jsou hlavní komponenty a na co si dát pozor v provozu.
 
 Velmi často zaboduje i zmínka o typických chybách, například špatné DNS u Private Endpointů, záměna NSG s ASG, nebo představa, že Terraform sám o sobě řeší časované runtime operace. Taková odpověď ukazuje praktickou zkušenost, ne jen naučené pojmy.[cite:9][cite:14][cite:32][cite:63]
+
+## 11. AKS – škálování aplikace
+
+### Otázka
+Aplikace v AKS má špičky v provozu ráno a v pátek odpoledne. Jak zajistíš automatické škálování, aby zbytečně neběžely prázdné nody v noci?
+
+### Vzorová odpověď
+V AKS se kombinují dvě vrstvy škálování. Horizontal Pod Autoscaler (HPA) škáluje počet podů podle metriky, nejčastěji CPU nebo memory utilization. Když narůstá počet podů, ale v clusteru chybí kapacita, nastupuje Cluster Autoscaler nebo modernější Karpenter, který přidá nové nody z node poolu.
+
+V noci, kdy jsou nody nevyužité, Cluster Autoscaler jejich počet zmenší zpět na minimum dle nastavení `min-count`. Pro maximální úsporu se node pooly nastaví s minimem například na 1 nebo 2 nody, a škálují se nahoru jen při reálné potřebě.
+
+Bonusový bod u pohovoru je zmínit, že pro plánované špičky (pátek odpoledne) lze kombinovat HPA s KEDA, které umí škálovat pody i podle vlastních metrik, například délky fronty ve Service Bus nebo Azure Queue Storage.
+
+---
+
+## 12. Azure Bastion vs VPN Gateway
+
+### Otázka
+Proč by zákazník použil Azure Bastion pro přístup na VM místo VPN? Kdy dáš přednost jednomu nebo druhému?
+
+### Vzorová odpověď
+Azure Bastion je spravovaná služba, která umožní RDP nebo SSH přistup na VM přímo přes Azure Portal přes HTTPS, bez nutnosti veřejné IP adresy na VM nebo VPN klienta na koncovém zařízení. Hodí se pro administrátorský přístup jednotlivých pracovníků na konkrétní VM.
+
+VPN Gateway naproti tomu propojuje buď celou firemní síť se sítí v Azure (site-to-site), nebo umožní vzdálené uživatele připojit jako plnohodnotné členy sítě (point-to-site). To je nutné například tehdy, kdy potřebuješ přistupovat na celý rozsah privátních IP adres, Private Endpointy nebo interní DNS z jiného prostředí.
+
+Zjednodušené pravidlo: Azure Bastion pro bezpečný přístup admina na VM bez VPN klienta, VPN Gateway pro síťové propojení, kdy potřebuješ být členem celého VNetu.
+
+---
+
+## 13. Cost management – jak snížit Azure účet
+
+### Otázka
+Zákazník říká, že Azure faktura výrazně narostla. Co uděláš jako první a jaké nástroje použiješ?
+
+### Vzorová odpověď
+Prvním krokem je otevřít Azure Cost Management a podívat se na breakdown nákladů podle service, resource group a subscriptions. Tam bývá hned vidět, co náklady žene nahoru – nejčastěji VM bez auto-shutdownu, zbytečně velké databázové SKU nebo opomenuté storage účty s daty.
+
+Konkrétní opatření závisí na zjištění, ale typický postup zahrnuje: vypnutí nevyužitých VM nebo přechod na Reserved Instances pro předvídatelné workloady, snížení SKU databází, nastavení alertů při překročení budgetu a taggování resources pro přehledné přiřazení nákladů na projekty nebo týmy.
+
+U pohovoru boduje zmínka o Azure Advisor, který automaticky generuje doporučení pro úsporu a ukazuje nevyužité nebo nadměrně alokované resources přímo v portálu.
+
+---
+
+## 14. Tagging a governance
+
+### Otázka
+Jak zajistíš, že každý nový resource v Azure bude mít povinné tagy jako `environment`, `owner` a `project`?
+
+### Vzorová odpověď
+Pro vynucení tagů se používá Azure Policy. Vytvoří se policy s efektem `deny` nebo `modify`, která buď zabrání vytvoření resource bez povinného tagu, nebo ho automaticky doplní z kontextu.
+
+Pro management na více subscriptions nebo prostředích se policies spravují přes Management Groups a přiřazují se na úrovni celé hierarchie. Azure Blueprints nebo moderní ekvivalent přes Bicep/Terraform template stack zajistí, že nové subscriptions jsou od začátku nakonfigurovány správně.
+
+Bonus: Azure Policy s efektem `modify` umí tag doplnit automaticky, například hodnotu `environment` zdědí z resource group tagu. Tím se sníží třecí plocha s vývojáři, kteří na tagy zapomínají.
+
+---
+
+## 15. Disaster Recovery
+
+### Otázka
+Zákazník provozuje kritickou aplikaci na Azure VM a říká, že potřebuje RTO do 1 hodiny a RPO do 15 minut. Jak to zajistíš?
+
+### Vzorová odpověď
+Pro tento scénář je vhodné Azure Site Recovery (ASR). Replikuje VM do jiného Azure regionu kontinuálně a umožní failover s RTO v řádu minut. Replikace probíhá asynchronně a RPO se konfiguruje – standardní hodnota je přibližně 30 sekund, takže 15 minutový cíl je splnitelný.
+
+Kromě ASR je potřeba myslet i na datovou vrstvu. Pokud aplikace používá Azure SQL, databáze se nastaví jako Geo-Redundant s active geo-replication nebo failover group, aby i data byla dostupná v sekundárním regionu s minimální ztrátou.
+
+Recovery plány v ASR umožní orchestrovat pořadí failoveru, takže se nejprve spustí databázové servery, pak aplikační tier a nakonec load balancer. Recovery plány se pravidelně testují přes test failover, který nevymaže produkci.
+
+---
+
+## 16. Azure Container Registry (ACR) a bezpečnost
+
+### Otázka
+Jak zabezpečíš Azure Container Registry a jak AKS cluster zajistí, že stahuje image pouze z tohoto privátního registru?
+
+### Vzorová odpověď
+ACR se zabezpečí vypnutím veřejného přístupu a přidáním Private Endpointu podobně jako u jiných PaaS služeb. Admin account se vypne a přístup se řídí výhradně přes RBAC role, například `AcrPull` pro čtení image nebo `AcrPush` pro CI/CD pipeline.
+
+AKS cluster se napojí na ACR přes `az aks update --attach-acr`, což nastaví Managed Identity clusteru jako oprávněnou pro stahování image. Tím odpadá potřeba ručně spravovat image pull secrets v každém namespace.
+
+Bonus: v produkci se hodí aktivovat i Azure Defender for Containers, který skenuje image v ACR na CVE zranitelnosti. Tím se zajistí, že do clusteru nevjede image s kritickými bezpečnostními problémy.
+
+---
+
+## 17. Azure SQL – zálohy a obnovení dat
+
+### Otázka
+Zákazník omylem smazal důležitá data z Azure SQL databáze. Co uděláš a jaké možnosti obnovy máš?
+
+### Vzorová odpověď
+Azure SQL automaticky zálohuje databáze bez nutnosti cokoliv konfigurovat. K dispozici jsou full backupy (týdně), diferenciální (každých 12 hodin) a transakční log backupy (každých 5–12 minut). Tím je pokrytý point-in-time restore na libovolný okamžik v retention period, standardně 7 dní (konfigurovatelné až 35 dní).
+
+V portálu nebo přes CLI se provede `Restore` databáze, zvolí se čas před smazáním dat a Azure vytvoří novou databázi k danému bodu. Původní databáze zůstane nedotčena.
+
+Pokud smazání proběhlo déle než je retention period, zbývá možnost Long-term Retention (LTR) – pokud byla předem nakonfigurována, ukládají se backupy až 10 let do Geo-Redundant Storage.
+
+---
+
+## 18. CI/CD pipeline do AKS
+
+### Otázka
+Popiš, jak bys navrhl GitHub Actions pipeline pro build a deploy Docker image do AKS clusteru.
+
+### Vzorová odpověď
+Pipeline se standardně skládá z několika stages. Nejprve build: checkout kódu, `docker build`, run unit testů. Pak push: přihlášení do ACR přes `azure/docker-login` action s OIDC federation (bez long-lived secrets) a push image s tagem podle commit SHA nebo verze.
+
+Deploy stage pak přihlásí do AKS přes `azure/aks-set-context`, aplikuje manifest nebo Helm chart s novou verzí image a počká na rollout. Pokud health checky selžou, pipeline spustí `kubectl rollout undo` jako automatický rollback.
+
+Klíčový detail pro pohovor: přihlašování do Azure z GitHub Actions by mělo jít přes Workload Identity Federation (OIDC), nikoli přes long-lived service principal secret. Tím odpadá nutnost spravovat a rotovat secrets v GitHub repozitáři.
+
+---
+
+## 19. VNet Peering a hub-spoke architektura
+
+### Otázka
+Co je VNet Peering a jak funguje hub-spoke architektura? Proč peering není tranzitivní?
+
+### Vzorová odpověď
+VNet Peering propojí dvě VNets na síťové úrovni s nízkou latencí přes páteřní Azure síť, bez nutnosti VPN nebo veřejné sítě. Po spárování spolu resources v obou VNets komunikují přes privátní IP adresy.
+
+Hub-spoke architektura využívá jeden centrální Hub VNet, kde bydlí sdílené služby – Azure Firewall, VPN Gateway, Bastion, Private DNS. Spoke VNety obsahují workloady a jsou napeerované na Hub. Spoke-to-spoke komunikace prochází přes Hub, kde se může centrálně filtrovat a logovat.
+
+Peering není tranzitivní: pokud Spoke A a Spoke B jsou napeerované na Hub, automaticky to neznamená, že Spoke A a Spoke B spolu komunikují. Provoz mezi nimi musí explicitně projít přes Hub s nakonfigurovaným Azure Firewallem nebo NVA (Network Virtual Appliance).
+
+---
+
+## 20. Entra ID – Conditional Access
+
+### Otázka
+Co je Conditional Access v Entra ID a jak bys použil tuto funkci k zabezpečení přístupu do Azure Portalu?
+
+### Vzorová odpověď
+Conditional Access je mechanismus Entra ID, který vyhodnocuje podmínky přihlášení a na základě nich povolí nebo zamítne přístup, případně vyžádá vícefaktorové ověření (MFA). Podmínky mohou zahrnovat lokaci uživatele, typ zařízení, rizikové skóre přihlášení nebo konkrétní cílovou aplikaci.
+
+Pro přístup do Azure Portalu by se vytvořila policy, která vyžaduje MFA pro všechny uživatele mimo firemní síť nebo pro uživatele s privilegovanými rolemi (Owner, Contributor) vždy bez výjimky. Tím se výrazně snižuje riziko kompromitace účtu přes phishing nebo uniklé heslo.
+
+Bonus pro pohovor: Conditional Access funguje dobře v kombinaci s Privileged Identity Management (PIM), kde uživatel nemá trvale přiřazenou vysokou roli, ale musí si ji aktivovat on-demand a teprve potom Conditional Access prověří podmínky přístupu.
+
+---
+
+## Jak odpovědi využít u pohovoru
+
+Odpovědi jsou formulované tak, aby zazněly přirozeně v rozhovoru. Dobrá technika je nejprve říct klíčové komponenty, pak postup a na konci přidat praktický detail nebo typickou chybu. Tazatelé zpravidla oceňují odpovědi, které ukazují, co se stane při selhání nebo co jsi viděl v praxi, víc než odpovědi, které jen vyjmenují funkce dané služby.
+
+## 21. Key Vault – soft delete a purge protection
+
+### Otázka
+Co je soft delete a purge protection v Azure Key Vault a proč je důležité je mít zapnuté?
+
+### Vzorová odpověď
+Soft delete zajišťuje, že smazaný objekt (secret, klíč, certifikát) nebo celý Key Vault není odstraněn okamžitě, ale přesune se do stavu smazáno a zůstane dostupný pro obnovu po dobu retence (výchozí 90 dní). Bez soft delete by neúmyslné smazání znamenalo nevratnou ztrátu dat.
+
+Purge protection přidává další vrstvu: pokud je zapnuta, ani administrátor ani automatizace nemůže trvale smazat objekt během retence. Tím se brání útokům nebo chybám, které by jinak šly provést i přes soft delete obejitím.
+
+U pohovoru je dobré doplnit, že od roku 2023 je soft delete pro nové Key Vaults v Azure zapnutý automaticky a nejde ho vypnout. Purge protection je nicméně stále volitelná a v produkčních prostředích s citlivými daty nebo certifikáty by měla být vždy zapnuta.
+
+---
+
+## 22. Key Vault – rozdíl mezi Keys, Secrets a Certificates
+
+### Otázka
+Jaký je v Key Vault rozdíl mezi Keys, Secrets a Certificates? Kdy použiješ co?
+
+### Vzorová odpověď
+Keys jsou kryptografické klíče pro šifrování, dešifrování nebo podepisování. Klíč může zůstat celý v Key Vault HSM a aplikace ho nikdy nestáhne jako soubor – místo toho volá Key Vault API, které operaci provede interně. Tím se klíčový materiál nikdy nedostane do aplikace.
+
+Secrets jsou libovolné textové hodnoty – hesla, connection stringy, API klíče nebo tokeny. Aplikace si secret stáhne a použije ho lokálně. Secrets nemají kryptografické vlastnosti, jen bezpečné uložení a řízení přístupu.
+
+Certificates jsou X.509 certifikáty, které Key Vault ukládá jako celek včetně privátního klíče. Key Vault zároveň umí spravovat jejich lifecycle – automaticky obnovovat certifikát u integrovaných CA jako DigiCert nebo Let's Encrypt a notifikovat při blížící se expiraci.
+
+---
+
+## 23. Terraform – remote state a state locking
+
+### Otázka
+Proč musíš mít Terraform state uložený vzdáleně a co je state locking? Co se stane, když se state lock nepodaří?
+
+### Vzorová odpověď
+Lokální state soubor funguje jen pro jednoho uživatele na jednom stroji. V týmu nebo v CI/CD pipeline by souběžné spuštění dvou `terraform apply` vedlo ke konfliktu – oba by četly stejný stav, každý by provedl změny a výsledek by byl nekonsistentní nebo poškozený state soubor.
+
+Remote backend v Azure Storage řeší obojí: state je centrálně uložen v blob storage a state locking (přes Azure Blob lease nebo Terraform Cloud lock) zajistí, že v danou chvíli může apply provádět jen jeden proces. Ostatní čekají nebo dostanou chybu.
+
+Pokud lock zůstane viset například po selhání pipeline, je potřeba ho manuálně uvolnit přes `terraform force-unlock`. Toho je potřeba být opatrný – uvolnit lock se smí jen tehdy, když je jisté, že žádný jiný apply neběží, jinak hrozí právě ten souběžný konflikt, kterému se lock snaží předejít.
+
+---
+
+## 24. Terraform drift detection
+
+### Otázka
+Vývojář ručně změnil konfiguraci VM přes Azure Portal. Jak zjistíš, že Terraform drift nastal, a jak ho vyřešíš?
+
+### Vzorová odpověď
+Drift je stav, kdy reálná infrastruktura neodpovídá Terraform state souboru nebo kódu. Zjistí se spuštěním `terraform plan` bez apply – pokud plán zobrazí změny přesto, že kód nebyl upraven, nastal drift.
+
+Pro automatizované sledování lze naplánovat pipeline, která pravidelně spouští `terraform plan` v read-only módu a odesílá výstup na alert nebo do ticketovacího systému. Pokud je výstup nenulový, tým ví, že někdo provedl manuální změnu mimo IaC.
+
+Řešení mají dvě varianty: buď `terraform apply` přepíše manuální změnu zpět na stav definovaný kódem (preferovaný přístup v silném IaC modelu), nebo se kód aktualizuje tak, aby manuální změnu zachytil a stal se opět zdrojem pravdy. Manuální změny portálem by se obecně měly v produkci blokovat přes RBAC.
+
+---
+
+## 25. Azure DNS – privátní a veřejné zóny
+
+### Otázka
+Jaký je rozdíl mezi Azure Public DNS Zone a Azure Private DNS Zone? Kdy potřebuješ obojí?
+
+### Vzorová odpověď
+Public DNS Zone hostuje záznamy, které jsou viditelné z internetu – A, CNAME, MX a další záznamy pro veřejnou doménu. Azure tuto zónu slouží jako autoritativní DNS server dostupný z celého internetu.
+
+Private DNS Zone je viditelná jen pro resources uvnitř VNetu nebo VNetů, které jsou s ní explicitně propojeny přes VNet link. Využívá se hlavně pro privátní name resolution u Private Endpointů, například `myserver.privatelink.database.windows.net` překládá na privátní IP místo veřejné.
+
+V praxi jsou obě potřebné souběžně. Veřejná zóna obsluhuje uživatele z internetu, privátní zóna zajišťuje, že resources uvnitř VNetu komunikují přes privátní IP adresy bez zbytečného přechodu přes veřejnou síť.
+
+---
+
+## 26. Azure Load Balancer vs Application Gateway vs Front Door
+
+### Otázka
+Vysvětli rozdíl mezi Azure Load Balancer, Application Gateway a Azure Front Door. Kdy použiješ co?
+
+### Vzorová odpověď
+Azure Load Balancer pracuje na L4 – TCP/UDP – a distribuuje provoz mezi backend VM nebo instance v rámci jednoho regionu. Nemá přehled o HTTP obsahu, neřeší SSL terminaci ani routování podle URL. Hodí se pro non-HTTP workloady nebo jako interní balancer mezi tiers.
+
+Application Gateway je L7 balancer v rámci jednoho regionu. Rozumí HTTP/HTTPS, umí routovat podle URL path nebo hostname, provádí SSL terminaci a má integrovaný WAF (Web Application Firewall). Je správnou volbou pro HTTP aplikace v jednom regionu.
+
+Azure Front Door je globální L7 entry point s anycast sítí. Zajišťuje SSL terminaci na nejbližším PoP (Point of Presence), cachování, WAF a globální routování s health-based failoverem mezi regiony. Použije se tehdy, kdy aplikace obsluhuje uživatele z celého světa a potřebuje minimalizovat latenci nebo globální redundanci.
+
+---
+
+## 27. Workload Identity pro AKS
+
+### Otázka
+Co je Workload Identity pro AKS a proč je to lepší než starší AAD Pod Identity?
+
+### Vzorová odpověď
+Workload Identity je moderní způsob, jak přiřadit Managed Identity konkrétnímu Kubernetes service accountu. Pod pak může získat Azure token bez jakéhokoliv uloženého secretu – místo toho se používá OIDC federation mezi Entra ID a AKS OIDC issuerem.
+
+Starší AAD Pod Identity fungovala přes DaemonSet a MIC/NMI komponenty, které interceptovaly IMDS volání. To přinášelo latenci, komplexitu a bezpečnostní riziko – jakýkoli pod s dostatečnými oprávněními mohl potenciálně získat token jiného podu.
+
+Workload Identity jde přes standardní Kubernetes service account token, který projde OIDC exchange u Entra ID. Je to průmyslový standard, jednodušší na správu, bez extra komponent v clusteru a bez potřeby spravovat jakékoliv secrety v manifestech.
+
+---
+
+## 28. Azure Monitor – Log Analytics KQL
+
+### Otázka
+Napiš KQL dotaz, který ukáže průměrné CPU využití všech VM za posledních 24 hodin, seřazené sestupně.
+
+### Vzorová odpověď
+U pohovoru nemusíš mít dotaz přesně nazpaměť, ale měl bys ukázat, že rozumíš struktuře tabulek a základním operátorům:
+
+```kql
+Perf
+| where TimeGenerated > ago(24h)
+| where CounterName == "% Processor Time"
+| where ObjectName == "Processor"
+| where InstanceName == "_Total"
+| summarize AvgCPU = avg(CounterValue) by Computer
+| order by AvgCPU desc
+```
+
+Tabulka `Perf` ukládá výkonnostní čítače z VM s nainstalovaným Azure Monitor Agentem. Klíčové operátory jsou `where` pro filtrování, `summarize` pro agregaci a `order by` pro řazení. Pro reálný dashboard by se výsledek doplnil o `render timechart` pro vizualizaci.
+
+---
+
+## 29. Azure Security Center / Microsoft Defender for Cloud
+
+### Otázka
+Co je Microsoft Defender for Cloud a jaký je rozdíl mezi free a placenými plány?
+
+### Vzorová odpověď
+Microsoft Defender for Cloud je centrální bezpečnostní nástroj, který kontinuálně hodnotí bezpečnostní posture Azure prostředí, detekuje hrozby a dává doporučení. Dříve se jmenoval Azure Security Center a Azure Defender – nyní jsou sloučeny pod jeden brand.
+
+Free tier přináší Secure Score, základní doporučení podle benchmarků (CIS, Azure Security Benchmark) a přehled compliance. Je dostupný bez poplatků pro všechny subscriptions.
+
+Placené Defender plány (Defender for Servers, Defender for Containers, Defender for SQL atd.) přidávají aktivní threat detection, just-in-time VM access, adaptive application controls, vulnerability assessment a integraci s Microsoft Sentinel pro SIEM/SOAR. Každý plán se platí za resource, takže je možné zapnout ochranu jen pro kritické workloady.
+
+---
+
+## 30. Azure Lighthouse a multi-tenant správa
+
+### Otázka
+Co je Azure Lighthouse a k čemu ho použiješ jako MSP nebo cloud konzultant?
+
+### Vzorová odpověď
+Azure Lighthouse umožní poskytovateli spravovaných služeb (MSP) nebo konzultantovi spravovat Azure prostředí zákazníka ze svého vlastního tenanta bez nutnosti vytvářet guest účty nebo sdílet přihlašovací údaje. Zákazník deleguje přístup k subscription nebo resource group přes ARM deployment a MSP vidí tato prostředí ve svém portálu vedle svých vlastních.
+
+Z pohledu auditability je to čistší než alternativy – každá akce MSP je viditelná v Azure Activity Log zákazníka pod jasně identifikovatelnou identitou. Zákazník má přehled, co kdy kdo dělal, a přístup může kdykoliv odvolat.
+
+Pro firmu na pozici cloud administrátora nebo MSP partnera je znalost Lighthouse signálem, že kandidát rozumí enterprise a multi-tenant scénářům, nejen jednomu prostředí. V praxi se používá v kombinaci s Azure Policy a Azure Monitor pro centrální governance a monitoring více zákazníků z jednoho místa.
+
+---
+
+## Jak odpovědi využít u pohovoru
+
+Odpovědi v této sadě pokrývají témata, která jsou méně obvyklá, ale výrazně odliší kandidáta od průměru. Klíčové oblasti jsou správa certifikátů v Key Vault, Terraform v CI/CD, DNS architektura a globální routing. Pohovorující typicky testují hloubku znalostí dotazem "a co se stane když to selže?" nebo "proč je tohle lepší než alternativa?" – proto každá odpověď obsahuje i srovnávací kontext.
