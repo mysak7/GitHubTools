@@ -9,8 +9,7 @@ from pathlib import Path
 # --- config ---
 DEFAULT_AUTHOR = "Michal"
 DEFAULT_LANGUAGE = "cs"
-DEFAULT_INPUT_DIR = Path("md")
-DEFAULT_OUTPUT = Path("output.epub")
+DEFAULT_INPUT_DIR = Path(__file__).parent
 # --------------
 
 try:
@@ -24,10 +23,6 @@ except ImportError:
 
 def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-
-
-def filename_title(path: Path) -> str:
-    return path.stem
 
 
 def md_to_epub(
@@ -46,7 +41,7 @@ def md_to_epub(
 
     for i, path in enumerate(input_paths):
         md_text = path.read_text(encoding="utf-8")
-        chapter_title = filename_title(path)
+        chapter_title = path.stem
 
         if i == 0 and title is None:
             title = chapter_title
@@ -78,8 +73,8 @@ def md_to_epub(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert Markdown to EPUB")
-    parser.add_argument("inputs", nargs="*", type=Path, help="Markdown file(s) or dirs (default: md/)")
-    parser.add_argument("-o", "--output", type=Path, help=f"Output .epub path (default: {DEFAULT_OUTPUT})")
+    parser.add_argument("inputs", nargs="*", type=Path, help="Markdown file(s) or dirs (default: script's own dir)")
+    parser.add_argument("-o", "--output", type=Path, help="Output .epub path (default: <first_file>.epub)")
     parser.add_argument("-t", "--title", help="Book title (default: first filename)")
     parser.add_argument("-a", "--author", default=DEFAULT_AUTHOR, help=f"Author name (default: {DEFAULT_AUTHOR})")
     parser.add_argument("-l", "--language", default=DEFAULT_LANGUAGE, help=f"Language code (default: {DEFAULT_LANGUAGE})")
@@ -89,7 +84,7 @@ def main() -> None:
     inputs: list[Path] = []
     for p in raw:
         if p.is_dir():
-            inputs.extend(sorted(p.glob("**/*.md")))
+            inputs.extend(sorted(f for f in p.glob("*.md") if f.name != p.name))
         else:
             inputs.append(p)
 
@@ -97,7 +92,7 @@ def main() -> None:
         print(f"No Markdown files found in {raw}.")
         sys.exit(1)
 
-    output = args.output or DEFAULT_OUTPUT
+    output = args.output or (DEFAULT_INPUT_DIR / f"{inputs[0].stem}.epub")
 
     md_to_epub(inputs, output, title=args.title, author=args.author, language=args.language)
 
