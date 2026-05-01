@@ -1,2 +1,3 @@
 azure-cli/CLI/consolidate_code_md.py
 azure-cli/CLI/full_codebase_context_md.txt
+*.epub
