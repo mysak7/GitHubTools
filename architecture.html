@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GitHub Projects — Architecture Overview</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #7d8590;
+    --blue: #58a6ff;
+    --green: #3fb950;
+    --orange: #f0883e;
+    --purple: #a371f7;
+    --red: #ff7b72;
+    --yellow: #e3b341;
+    --teal: #39d353;
+    --pink: #f778ba;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.6;
+  }
+
+  /* NAV */
+  nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(13,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 32px;
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  nav .logo { font-weight: 700; font-size: 18px; color: var(--blue); margin-right: auto; }
+  nav a { color: var(--muted); text-decoration: none; font-size: 13px; transition: color .2s; }
+  nav a:hover { color: var(--text); }
+
+  /* HERO */
+  .hero {
+    text-align: center;
+    padding: 80px 32px 60px;
+    background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(88,166,255,0.12), transparent);
+  }
+  .hero h1 { font-size: 48px; font-weight: 800; letter-spacing: -1px; }
+  .hero h1 span { color: var(--blue); }
+  .hero p { margin-top: 16px; color: var(--muted); font-size: 18px; max-width: 600px; margin-inline: auto; }
+  .hero .stats { display: flex; gap: 40px; justify-content: center; margin-top: 40px; flex-wrap: wrap; }
+  .stat { text-align: center; }
+  .stat-num { font-size: 36px; font-weight: 700; color: var(--blue); }
+  .stat-label { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+  /* SECTION */
+  section { padding: 60px 32px; max-width: 1400px; margin: 0 auto; }
+  section h2 {
+    font-size: 26px; font-weight: 700; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section-desc { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
+  hr.sep { border: none; border-top: 1px solid var(--border); margin: 0 32px; }
+
+  /* TECH BADGE */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .3px;
+  }
+  .badge-tf  { background: rgba(120,90,220,0.2); color: #a371f7; border: 1px solid rgba(163,113,247,.3); }
+  .badge-py  { background: rgba(55,130,210,0.2); color: #79c0ff; border: 1px solid rgba(121,192,255,.3); }
+  .badge-docker { background: rgba(30,150,240,0.2); color: #56d4f8; border: 1px solid rgba(86,212,248,.3); }
+  .badge-k8s { background: rgba(50,200,240,0.2); color: #39d353; border: 1px solid rgba(57,211,83,.3); }
+  .badge-az  { background: rgba(0,120,212,0.2); color: #58a6ff; border: 1px solid rgba(88,166,255,.3); }
+  .badge-llm { background: rgba(240,136,62,0.2); color: #f0883e; border: 1px solid rgba(240,136,62,.3); }
+  .badge-sh  { background: rgba(125,133,144,0.2); color: #8b949e; border: 1px solid rgba(139,148,158,.3); }
+  .badge-kafka { background: rgba(200,60,60,0.2); color: #ff7b72; border: 1px solid rgba(255,123,114,.3); }
+  .badge-ansible { background: rgba(220,50,50,0.2); color: #ff7b72; border: 1px solid rgba(255,123,114,.3); }
+  .badge-gcp { background: rgba(66,133,244,0.2); color: #79c0ff; border: 1px solid rgba(121,192,255,.3); }
+  .badge-api { background: rgba(63,185,80,0.2); color: #3fb950; border: 1px solid rgba(63,185,80,.3); }
+
+  /* PROJECT CARDS */
+  .grid { display: grid; gap: 20px; }
+  .grid-3 { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+  .grid-2 { grid-template-columns: repeat(auto-fill, minmax(500px, 1fr)); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    transition: border-color .2s, transform .15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: 12px 12px 0 0;
+  }
+  .card:hover { border-color: rgba(88,166,255,.4); transform: translateY(-2px); }
+  .card.azure::before { background: linear-gradient(90deg, #0078d4, #58a6ff); }
+  .card.llm::before   { background: linear-gradient(90deg, #f0883e, #a371f7); }
+  .card.infra::before { background: linear-gradient(90deg, #a371f7, #6e76ae); }
+  .card.sec::before   { background: linear-gradient(90deg, #ff7b72, #f0883e); }
+  .card.tool::before  { background: linear-gradient(90deg, #3fb950, #39d353); }
+
+  .card-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+  .card-icon { font-size: 28px; flex-shrink: 0; }
+  .card-title { font-size: 17px; font-weight: 700; }
+  .card-subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .card-desc { font-size: 13px; color: var(--muted); margin-bottom: 14px; line-height: 1.5; }
+  .card-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+
+  .card-arch {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    color: #7d8590;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .card-arch .hl { color: var(--blue); }
+  .card-arch .hl-g { color: var(--green); }
+  .card-arch .hl-o { color: var(--orange); }
+  .card-arch .hl-p { color: var(--purple); }
+  .card-arch .hl-r { color: var(--red); }
+
+  /* FLOW DIAGRAM */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-wrap: wrap;
+    margin: 8px 0;
+  }
+  .flow-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .flow-arrow { color: var(--muted); padding: 0 6px; font-size: 16px; }
+
+  /* OVERVIEW DIAGRAM */
+  .overview-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px;
+    margin-bottom: 60px;
+    text-align: center;
+    max-width: 1400px;
+    margin-inline: auto;
+  }
+  .ov-title { font-size: 20px; font-weight: 700; margin-bottom: 32px; }
+  .ov-clusters { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+  .ov-cluster {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    min-width: 200px;
+  }
+  .ov-cluster-title { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 12px; }
+  .ov-item { font-size: 13px; padding: 4px 0; color: var(--text); }
+  .ov-item.dim { color: var(--muted); }
+
+  /* SMALL CARDS for utilities */
+  .small-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .small-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .small-card:hover { border-color: rgba(88,166,255,.3); }
+  .small-card .icon { font-size: 22px; flex-shrink: 0; }
+  .small-card .name { font-size: 14px; font-weight: 700; }
+  .small-card .desc { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+  /* FOOTER */
+  footer {
+    text-align: center;
+    padding: 40px;
+    color: var(--muted);
+    font-size: 13px;
+    border-top: 1px solid var(--border);
+    margin-top: 40px;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="logo">~/GitHub</span>
+  <a href="#overview">Overview</a>
+  <a href="#llm">LLM Infra</a>
+  <a href="#azure">Azure Cloud</a>
+  <a href="#security">Security</a>
+  <a href="#finance">Finance</a>
+  <a href="#tooling">Tooling</a>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <h1>GitHub Projects<br><span>Architecture Overview</span></h1>
+  <p>A collection of cloud infrastructure, AI/LLM orchestration, and DevOps tooling projects — all centered on Azure and open-source AI.</p>
+  <div class="stats">
+    <div class="stat"><div class="stat-num">23</div><div class="stat-label">Repositories</div></div>
+    <div class="stat"><div class="stat-num">5</div><div class="stat-label">Domains</div></div>
+    <div class="stat"><div class="stat-num">5K+</div><div class="stat-label">Lines of Python</div></div>
+    <div class="stat"><div class="stat-num">90+</div><div class="stat-label">Terraform Files</div></div>
+  </div>
+</div>
+
+<!-- OVERVIEW MAP -->
+<div style="padding: 0 32px; max-width: 1400px; margin: 0 auto 20px;">
+  <div class="overview-diagram" id="overview">
+    <div class="ov-title">Project Landscape</div>
+    <div class="ov-clusters">
+      <div class="ov-cluster">
+        <div class="ov-cluster-title" style="color: #f0883e;">🤖 LLM Orchestration</div>
+        <div class="ov-item">az-spot-orchestrator</div>
+        <div class="ov-item">az-llm-aks</div>
+        <div class="ov-item">az-llm-proxy</div>
+        <div class="ov-item">vertex-proxy</div>
+        <div class="ov-item">llm-orchestrator</div>
+      </div>
+      <div class="ov-cluster">
+        <div class="ov-cluster-title" style="color: #58a6ff;">☁️ Azure Infrastructure</div>
+        <div class="ov-item">az-hub-spoke</div>
+        <div class="ov-item">az-networking-lab</div>
+        <div class="ov-item">az-dns-mysak</div>
+        <div class="ov-item">azure-penny</div>
+      </div>
+      <div class="ov-cluster">
+        <div class="ov-cluster-title" style="color: #ff7b72;">🛡️ Security</div>
+        <div class="ov-item">SEIP</div>
+        <div class="ov-item">azure-log-analyzer</div>
+      </div>
+      <div class="ov-cluster">
+        <div class="ov-cluster-title" style="color: #3fb950;">💰 Finance / AI</div>
+        <div class="ov-item">az-ledger-lens</div>
+        <div class="ov-item">MCP-Gmail</div>
+      </div>
+      <div class="ov-cluster">
+        <div class="ov-cluster-title" style="color: #7d8590;">🔧 Tooling</div>
+        <div class="ov-item">claudebridge</div>
+        <div class="ov-item">ansible2</div>
+        <div class="ov-item">repo-guide</div>
+        <div class="ov-item dim">scripts-tools</div>
+        <div class="ov-item dim">cloud-test-vm</div>
+        <div class="ov-item dim">terra-style</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="sep">
+
+<!-- ═══════════════════════════════════════════ LLM SECTION -->
+<section id="llm">
+  <h2>🤖 LLM Orchestration</h2>
+  <p class="section-desc">Projects for serving open-source LLMs at low cost on Azure Spot infrastructure, with automatic failover and OpenAI-compatible APIs.</p>
+
+  <div class="grid grid-3">
+
+    <!-- az-spot-orchestrator -->
+    <div class="card llm">
+      <div class="card-header">
+        <div class="card-icon">⚡</div>
+        <div>
+          <div class="card-title">az-spot-orchestrator</div>
+          <div class="card-subtitle">Dynamic Spot VM LLM Control Plane</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Finds the cheapest Azure region, provisions a Spot VM with Ollama via cloud-init, and proxies inference traffic to it. On eviction, Temporal automatically re-provisions in a new region.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-docker">Docker</span>
+        <span class="badge badge-az">Azure Spot</span>
+        <span class="badge badge-llm">Ollama</span>
+        <span class="badge badge-api">FastAPI</span>
+      </div>
+      <div class="card-arch"><span class="hl">You</span> ──OpenAI-compatible──▶ <span class="hl-o">Control Plane VM</span>
+                                 FastAPI :8000 + Temporal
+                                 Cosmos DB (serverless)
+                                        │ provisions
+                                        ▼
+                                 <span class="hl-g">Spot VM</span> (cheapest region)
+                                 Ollama :11434 + free temp disk</div>
+    </div>
+
+    <!-- az-llm-aks -->
+    <div class="card llm">
+      <div class="card-header">
+        <div class="card-icon">☸️</div>
+        <div>
+          <div class="card-title">az-llm-aks</div>
+          <div class="card-subtitle">LLM Orchestrator on AKS</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Kubernetes-native LLM orchestrator on Azure AKS. Control plane handles routing; KEDA scales Spot node pools for inference workloads. ELK stack for observability.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-k8s">AKS / Kubernetes</span>
+        <span class="badge badge-az">Azure Spot</span>
+        <span class="badge badge-llm">KEDA</span>
+        <span class="badge badge-docker">Docker</span>
+      </div>
+      <div class="card-arch"><span class="hl">Control Plane</span> (LoadBalancer :80)
+  └── routes to <span class="hl-o">Spot Node Pool</span>
+        └── Ollama workers (KEDA-scaled)
+
+<span class="hl-p">Observability:</span> Fluent Bit → Elasticsearch → Kibana</div>
+    </div>
+
+    <!-- az-llm-proxy -->
+    <div class="card llm">
+      <div class="card-header">
+        <div class="card-icon">🔀</div>
+        <div>
+          <div class="card-title">az-llm-proxy</div>
+          <div class="card-subtitle">LiteLLM Proxy for Azure AI Foundry</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Single OpenAI-compatible endpoint on :4003 that fans out to Azure-hosted models (DeepSeek, Phi-4). Includes a custom hook that transparently translates tool calls for Phi models which lack native tool support.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-docker">Docker Compose</span>
+        <span class="badge badge-az">Azure AI Foundry</span>
+        <span class="badge badge-llm">LiteLLM</span>
+      </div>
+      <div class="card-arch"><span class="hl">:4003</span> (OpenAI-compatible)
+  └── LiteLLM router
+        ├── <span class="hl-g">deepseek-v3.2-speciale</span>
+        ├── <span class="hl-o">phi-4-reasoning</span>
+        ├── <span class="hl-p">phi-4</span>
+        └── phi-4-multimodal-instruct
+
+<span class="hl-r">PhiTextToolCalling</span> hook: text→tool call translation</div>
+    </div>
+
+    <!-- vertex-proxy -->
+    <div class="card llm">
+      <div class="card-header">
+        <div class="card-icon">🌐</div>
+        <div>
+          <div class="card-title">vertex-proxy</div>
+          <div class="card-subtitle">OpenAI Proxy for Google Vertex AI</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        LiteLLM-based proxy on :4001 that exposes Google Vertex AI Gemini models via the OpenAI API format. Drop-in replacement for any OpenAI SDK client targeting Gemini.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-docker">Docker</span>
+        <span class="badge badge-gcp">GCP Vertex AI</span>
+        <span class="badge badge-llm">LiteLLM</span>
+      </div>
+      <div class="card-arch"><span class="hl">:4001</span> (OpenAI-compatible)
+  └── LiteLLM
+        ├── <span class="hl-g">gemini-2.5-flash</span>
+        ├── <span class="hl-g">gemini-2.5-pro</span>
+        └── <span class="hl-g">gemini-3.1-flash-lite-preview</span>
+
+Auth via GCP Service Account JSON</div>
+    </div>
+
+    <!-- llm-orchestrator -->
+    <div class="card llm">
+      <div class="card-header">
+        <div class="card-icon">🖥️</div>
+        <div>
+          <div class="card-title">llm-orchestrator</div>
+          <div class="card-subtitle">Single-CLI Ephemeral Spot LLM</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        One Python CLI that queries Azure Retail Prices API, spins up a Spot VM, runs Ansible for setup, deploys SmolLM2-360M via llama-server, and returns an OpenAI-compatible endpoint — all in one command.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-ansible">Ansible</span>
+        <span class="badge badge-az">Azure Spot</span>
+        <span class="badge badge-llm">llama-server</span>
+      </div>
+      <div class="card-arch"><span class="hl-g">main.py</span>
+  1. Price API → cheapest region
+  2. Deploy Standard_B2ts_v2 Spot VM
+  3. Ansible: base setup + NetBird VPN
+  4. Deploy <span class="hl-o">SmolLM2-360M-Instruct</span> Q4_K_M
+  5. Expose :8080 (OpenAI-compatible, API key)</div>
+    </div>
+
+  </div>
+</section>
+<hr class="sep">
+
+<!-- ═══════════════════════════════════════════ AZURE INFRA -->
+<section id="azure">
+  <h2>☁️ Azure Cloud Infrastructure</h2>
+  <p class="section-desc">Pure infrastructure projects — Terraform-managed Azure networking, DNS, and cost observability.</p>
+
+  <div class="grid grid-3">
+
+    <!-- az-hub-spoke -->
+    <div class="card azure">
+      <div class="card-header">
+        <div class="card-icon">🕸️</div>
+        <div>
+          <div class="card-title">az-hub-spoke</div>
+          <div class="card-subtitle">Enterprise Hub-and-Spoke Network</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Enterprise-grade Azure networking with Azure Firewall, Bastion, Private DNS zones for Blob/Key Vault, UDR-based routing, and VNet Peering. Modular Terraform with remote state in Azure Blob.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-az">Azure Firewall</span>
+        <span class="badge badge-az">Azure Bastion</span>
+        <span class="badge badge-az">Private DNS</span>
+        <span class="badge badge-az">VNet Peering</span>
+      </div>
+      <div class="card-arch"><span class="hl">Hub VNet</span> (10.0.0.0/16)
+  ├── Azure Firewall    (10.0.1.0/26)
+  ├── Azure Bastion     (10.0.2.0/26)
+  ├── Shared Services   (10.0.3.0/24)
+  └── DNS               (10.0.4.0/24)
+       │ VNet Peering
+       ├── <span class="hl-g">App Spoke</span>    (10.1.0.0/16) web/app/PE
+       └── <span class="hl-o">Mgmt Spoke</span>  (10.2.0.0/16) jump VMs</div>
+    </div>
+
+    <!-- az-networking-lab -->
+    <div class="card azure">
+      <div class="card-header">
+        <div class="card-icon">🧪</div>
+        <div>
+          <div class="card-title">az-networking-lab</div>
+          <div class="card-subtitle">Azure Networking Playground</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Minimal Terraform stack for learning Azure networking. Deploys a Spot VM in East US 2 with a full network stack, service principal, and Storage service endpoint.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-az">Azure Spot VM</span>
+        <span class="badge badge-az">Service Endpoint</span>
+      </div>
+      <div class="card-arch">East US 2
+  ├── VNet + Subnet
+  ├── NSG + Public IP
+  ├── Spot VM (learning)
+  ├── Service Principal
+  └── Storage Service Endpoint</div>
+    </div>
+
+    <!-- az-dns-mysak -->
+    <div class="card azure">
+      <div class="card-header">
+        <div class="card-icon">🌐</div>
+        <div>
+          <div class="card-title">az-dns-mysak</div>
+          <div class="card-subtitle">Azure DNS Configuration</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Terraform-managed Azure DNS zone configuration for custom domain routing.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-az">Azure DNS</span>
+      </div>
+      <div class="card-arch">Azure DNS Zone
+  └── Record sets (A, CNAME, TXT)
+  └── Managed via Terraform</div>
+    </div>
+
+    <!-- azure-penny -->
+    <div class="card azure">
+      <div class="card-header">
+        <div class="card-icon">💰</div>
+        <div>
+          <div class="card-title">azure-penny</div>
+          <div class="card-subtitle">Serverless Cost Management Dashboard</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Reads Azure Cost Management Parquet/CSV exports from Blob Storage and serves an aggregated cost dashboard via FastAPI on Azure Container Apps. Scales to zero when idle. Passwordless auth via Managed Identity.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-docker">Docker</span>
+        <span class="badge badge-az">Container Apps</span>
+        <span class="badge badge-az">Managed Identity</span>
+        <span class="badge badge-api">FastAPI</span>
+      </div>
+      <div class="card-arch"><span class="hl">Azure Cost Management</span>
+  │  (daily Parquet/CSV export)
+  ▼
+<span class="hl-o">Blob Storage</span> ──Managed Identity──▶ <span class="hl-g">Container App</span>
+                                        FastAPI (scales 0→1)
+                                        ACR image via AcrPull</div>
+    </div>
+
+  </div>
+</section>
+<hr class="sep">
+
+<!-- ═══════════════════════════════════════════ SECURITY -->
+<section id="security">
+  <h2>🛡️ Security Pipelines</h2>
+  <p class="section-desc">Event-driven security intelligence — from endpoint collection to LLM-powered threat analysis.</p>
+
+  <div class="grid grid-2">
+
+    <!-- SEIP -->
+    <div class="card sec">
+      <div class="card-header">
+        <div class="card-icon">🔍</div>
+        <div>
+          <div class="card-title">SEIP</div>
+          <div class="card-subtitle">Sentinel Event Intelligence Platform</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        End-to-end security pipeline: Windows endpoint telemetry → Kafka → DynamoDB → LLM analysis with ASG-scaled workers → noise filtering via Lua-generated patterns → GUI viewers.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python (53 files)</span>
+        <span class="badge badge-tf">Terraform (34 files)</span>
+        <span class="badge badge-kafka">Kafka</span>
+        <span class="badge badge-docker">Docker (10)</span>
+        <span class="badge badge-llm">LLM Analysis</span>
+        <span class="badge badge-ansible">Ansible</span>
+      </div>
+      <div class="card-arch"><span class="hl">Windows Endpoints</span>
+  Sysmon + Fluent Bit
+         │
+         ▼
+     <span class="hl-r">Kafka Topic</span>
+         │
+         ▼
+  <span class="hl-o">seip-kafka-consumer</span> ──▶ DynamoDB (security-events)
+                                    │
+              ┌───────────────────┬─┴──────────────────┐
+              ▼                   ▼                     ▼
+      <span class="hl-g">seip-deep-mind</span>    deep-mind workers   seip-orchestrator
+      (primary LLM)     (ASG 0–5 scaled)    (ASG controller)
+              │
+              ▼
+      DynamoDB (analysis, severity)
+              │
+     ┌────────┴────────┐
+     ▼                 ▼
+  seip-gui          <span class="hl-p">seip-manager</span>
+  (viewer)          (patterns + Lua gen)</div>
+    </div>
+
+    <!-- azure-log-analyzer -->
+    <div class="card sec">
+      <div class="card-header">
+        <div class="card-icon">📋</div>
+        <div>
+          <div class="card-title">azure-log-analyzer</div>
+          <div class="card-subtitle">Ephemeral AI SecOps Pipeline on AKS</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Logs → FastAPI ingest gateway → Azure Service Bus → KEDA-scaled ephemeral llama.cpp workers on AKS. Workers auto-destroy via Karpenter TTLs (1-hour node lifetime). FinOps guardrails: $180/mo budget, 16 CPU hard limit, max 15 concurrent workers.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-tf">Terraform (12)</span>
+        <span class="badge badge-k8s">AKS / Karpenter</span>
+        <span class="badge badge-docker">Docker</span>
+        <span class="badge badge-llm">llama.cpp / KEDA</span>
+        <span class="badge badge-az">Service Bus</span>
+      </div>
+      <div class="card-arch"><span class="hl">Your System</span>
+  POST /analyze
+         │
+         ▼
+  <span class="hl-o">FastAPI Gateway</span>
+         │
+         ▼
+  <span class="hl-r">Azure Service Bus</span>
+         │
+         ▼ (KEDA ScaledJob)
+  <span class="hl-g">llama.cpp Worker</span> (ephemeral pod)
+  AI threat analysis → result stored
+  Node TTL: 1 hr (Karpenter evicts)</div>
+    </div>
+
+  </div>
+</section>
+<hr class="sep">
+
+<!-- ═══════════════════════════════════════════ FINANCE / AI -->
+<section id="finance">
+  <h2>💳 Finance &amp; Document Intelligence</h2>
+  <p class="section-desc">Event-driven personal finance automation using multimodal LLMs, Gmail API, and hybrid RAG.</p>
+
+  <div class="grid grid-2">
+
+    <!-- az-ledger-lens -->
+    <div class="card tool">
+      <div class="card-header">
+        <div class="card-icon">🔭</div>
+        <div>
+          <div class="card-title">az-ledger-lens</div>
+          <div class="card-subtitle">Personal Finance &amp; Document Intelligence Pipeline</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Ingests invoices/receipts from Gmail, extracts structured data + embeddings via GPT-4o/Gemini, and stores them for hybrid RAG querying (Text-to-SQL + vector search). Supports historical backfill and real-time Gmail Push Notifications via GCP Pub/Sub.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-docker">Docker (2)</span>
+        <span class="badge badge-az">Container Apps + KEDA</span>
+        <span class="badge badge-gcp">GCP Pub/Sub</span>
+        <span class="badge badge-llm">GPT-4o / Gemini</span>
+      </div>
+      <div class="card-arch"><span class="hl">Gmail API</span>
+  ├── Historical: producer script → Storage Queue
+  └── Real-time: Gmail Push → <span class="hl-p">GCP Pub/Sub</span> → Azure Webhook → Queue
+                │
+                ▼
+       <span class="hl-o">Azure Storage Queue</span>
+                │ (KEDA, 0→4 replicas)
+                ▼
+        <span class="hl-g">ACA Worker</span> (Python / LangChain)
+        │ multimodal LLM extract (JSON)
+        │ vector embedding
+        ├──▶ Blob Storage (raw docs)
+        └──▶ SQLite/pgvector (structured + vectors)
+                │
+                ▼
+        <span class="hl-p">Hybrid RAG Agent</span> (Text-to-SQL + vector search)</div>
+    </div>
+
+    <!-- MCP-Gmail -->
+    <div class="card tool">
+      <div class="card-header">
+        <div class="card-icon">📧</div>
+        <div>
+          <div class="card-title">MCP-Gmail</div>
+          <div class="card-subtitle">Gmail MCP Server</div>
+        </div>
+      </div>
+      <div class="card-desc">
+        Model Context Protocol (MCP) server that exposes Gmail API operations as tools for Claude and other LLM agents. Enables AI assistants to read, search, and manage email programmatically.
+      </div>
+      <div class="card-badges">
+        <span class="badge badge-py">Python (2.3K files)</span>
+        <span class="badge badge-api">MCP Protocol</span>
+        <span class="badge badge-gcp">Gmail API</span>
+        <span class="badge badge-sh">Shell</span>
+      </div>
+      <div class="card-arch"><span class="hl">Claude / LLM Agent</span>
+         │ MCP Protocol
+         ▼
+  <span class="hl-o">MCP-Gmail Server</span>
+         │ OAuth2
+         ▼
+  <span class="hl-g">Gmail API</span>
+  Tools: list_emails, search, read, reply...</div>
+    </div>
+
+  </div>
+</section>
+<hr class="sep">
+
+<!-- ═══════════════════════════════════════════ TOOLING -->
+<section id="tooling">
+  <h2>🔧 Tooling &amp; Utilities</h2>
+  <p class="section-desc">Supporting infrastructure, automation scripts, and development tools.</p>
+
+  <div class="small-grid">
+
+    <div class="small-card">
+      <div class="icon">🌉</div>
+      <div>
+        <div class="name">claudebridge</div>
+        <div class="desc">Dockerized FastAPI wrapper that exposes Claude Code CLI as an OpenAI-compatible REST API. Accepts prompts, runs claude -p subprocess, returns results.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">📖</div>
+      <div>
+        <div class="name">repo-guide</div>
+        <div class="desc">Auto-generates shareable documentation guides for repositories. Python + Docker, produces structured project overviews.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">🤖</div>
+      <div>
+        <div class="name">ansible2</div>
+        <div class="desc">Ansible playbooks for bootstrapping new Linux hosts: user setup, Docker, monitoring stack, and optional NetBird VPN mesh.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">🐙</div>
+      <div>
+        <div class="name">GitHubTools</div>
+        <div class="desc">Python utilities for GitHub API interactions and repository management.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">📝</div>
+      <div>
+        <div class="name">terra-style</div>
+        <div class="desc">Curated Terraform style guides from the community (mischavandenburg, carlzxc71, mb). Reference for consistent IaC patterns.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">☁️</div>
+      <div>
+        <div class="name">cloud-test-vm</div>
+        <div class="desc">Shell scripts for quickly spinning up and tearing down test VMs in cloud environments.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">🛠️</div>
+      <div>
+        <div class="name">scripts-tools</div>
+        <div class="desc">Miscellaneous install and utility scripts, including RTK (Rust Token Killer) installer for Claude Code.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">🏭</div>
+      <div>
+        <div class="name">DarkFactory</div>
+        <div class="desc">Experimental / lab project.</div>
+      </div>
+    </div>
+
+    <div class="small-card">
+      <div class="icon">😄</div>
+      <div>
+        <div class="name">claude-joke</div>
+        <div class="desc">Shell scripts for Claude API demos and quick experiments.</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- TECH STACK SUMMARY -->
+<section>
+  <h2>📊 Tech Stack at a Glance</h2>
+  <p class="section-desc">Technologies used across all projects.</p>
+
+  <div style="display: grid; gap: 20px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
+
+    <div class="card" style="border-color: rgba(163,113,247,.3);">
+      <div style="font-weight: 700; margin-bottom: 12px; color: #a371f7;">Infrastructure as Code</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <span class="badge badge-tf">Terraform</span>
+        <span class="badge badge-az">azurerm provider</span>
+        <span class="badge badge-tf">Remote State (Blob)</span>
+        <span class="badge badge-tf">Modular design</span>
+      </div>
+    </div>
+
+    <div class="card" style="border-color: rgba(88,166,255,.3);">
+      <div style="font-weight: 700; margin-bottom: 12px; color: #58a6ff;">Azure Services</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <span class="badge badge-az">AKS</span>
+        <span class="badge badge-az">Container Apps</span>
+        <span class="badge badge-az">Spot VMs</span>
+        <span class="badge badge-az">Service Bus</span>
+        <span class="badge badge-az">Cosmos DB</span>
+        <span class="badge badge-az">Blob Storage</span>
+        <span class="badge badge-az">Azure Firewall</span>
+        <span class="badge badge-az">Bastion</span>
+        <span class="badge badge-az">AI Foundry</span>
+      </div>
+    </div>
+
+    <div class="card" style="border-color: rgba(240,136,62,.3);">
+      <div style="font-weight: 700; margin-bottom: 12px; color: #f0883e;">AI / LLM</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <span class="badge badge-llm">Ollama</span>
+        <span class="badge badge-llm">llama.cpp</span>
+        <span class="badge badge-llm">LiteLLM</span>
+        <span class="badge badge-llm">GPT-4o</span>
+        <span class="badge badge-llm">Gemini</span>
+        <span class="badge badge-llm">DeepSeek</span>
+        <span class="badge badge-llm">Phi-4</span>
+        <span class="badge badge-llm">SmolLM2</span>
+        <span class="badge badge-llm">KEDA autoscale</span>
+      </div>
+    </div>
+
+    <div class="card" style="border-color: rgba(63,185,80,.3);">
+      <div style="font-weight: 700; margin-bottom: 12px; color: #3fb950;">Runtime & Containers</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <span class="badge badge-docker">Docker</span>
+        <span class="badge badge-docker">Docker Compose</span>
+        <span class="badge badge-k8s">Kubernetes</span>
+        <span class="badge badge-k8s">Karpenter</span>
+        <span class="badge badge-k8s">Fluent Bit</span>
+        <span class="badge badge-k8s">Temporal</span>
+      </div>
+    </div>
+
+    <div class="card" style="border-color: rgba(121,192,255,.3);">
+      <div style="font-weight: 700; margin-bottom: 12px; color: #79c0ff;">Languages & Frameworks</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <span class="badge badge-py">Python</span>
+        <span class="badge badge-api">FastAPI</span>
+        <span class="badge badge-py">LangChain</span>
+        <span class="badge badge-sh">Bash</span>
+        <span class="badge badge-ansible">Ansible</span>
+      </div>
+    </div>
+
+    <div class="card" style="border-color: rgba(255,123,114,.3);">
+      <div style="font-weight: 700; margin-bottom: 12px; color: #ff7b72;">Data & Messaging</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <span class="badge badge-kafka">Kafka</span>
+        <span class="badge badge-az">Azure Service Bus</span>
+        <span class="badge badge-gcp">GCP Pub/Sub</span>
+        <span class="badge badge-py">DynamoDB</span>
+        <span class="badge badge-py">Cosmos DB</span>
+        <span class="badge badge-py">pgvector</span>
+        <span class="badge badge-py">sqlite-vec</span>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<footer>
+  Generated 2026-05-09 · <strong>~/GitHub</strong> — Azure · LLM · DevOps
+</footer>
+
+</body>
+</html>
