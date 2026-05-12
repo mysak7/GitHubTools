@@ -4,6 +4,7 @@
 import re
 import sys
 from html.parser import HTMLParser
+from pathlib import Path
 
 
 # Void elements have no closing tag — skip them when depth-counting
@@ -70,8 +71,8 @@ def main():
         print("Usage: html_to_llm.py <file.html> [output.txt]", file=sys.stderr)
         sys.exit(1)
 
-    path = sys.argv[1]
-    with open(path, encoding="utf-8") as f:
+    src = Path(sys.argv[1])
+    with src.open(encoding="utf-8") as f:
         html = f.read()
 
     original_bytes = len(html.encode())
@@ -79,14 +80,11 @@ def main():
     result_bytes = len(result.encode())
     savings = 100 * (1 - result_bytes / original_bytes)
 
-    if len(sys.argv) >= 3:
-        with open(sys.argv[2], "w", encoding="utf-8") as f:
-            f.write(result)
-        print(f"Saved to {sys.argv[2]}")
-    else:
-        print(result)
+    out = Path(sys.argv[2]) if len(sys.argv) >= 3 else src.with_name(src.stem + "_llm.txt")
+    out.write_text(result, encoding="utf-8")
+    print(f"Saved to {out}")
 
-    print(f"\n[{original_bytes:,}B → {result_bytes:,}B, -{savings:.0f}% tokens]",
+    print(f"[{original_bytes:,}B → {result_bytes:,}B, -{savings:.0f}% tokens]",
           file=sys.stderr)
 
 
