@@ -135,8 +135,8 @@
 ## Project: aws-penny — AWS Cost Management Dashboard
 
 - **Business Domain:** FinOps / AWS Cloud Cost Visibility
-- **Core Architecture:** ECS Fargate task running FastAPI. Ingests AWS Cost & Usage Report (CUR 2.0) Parquet files from S3 into pandas DataFrame (in-memory cache, 1 h TTL, `asyncio.Lock`). Second cache for live AWS resource inventory (boto3 Describe* calls, 15 min TTL). Serves cost aggregations, MTD forecasting, anomaly detection (week-over-week delta), and optional resource mutation (EC2 terminate, RDS stop).
-- **Primary Tech Stack:** Python 3.11, FastAPI 0.136.1, uvicorn 0.47.0, pandas 3.0.3, pyarrow 24.0.0, boto3 ≥1.34, Jinja2 3.1.6, python-dotenv 1.2.2; Terraform AWS provider ~5.0, ECS Fargate, ECR, ALB
+- **Core Architecture:** ECS Fargate task running FastAPI. Ingests AWS Cost & Usage Report (CUR 2.0) Parquet files from S3 into pandas DataFrame (in-memory cache, 1 h TTL, `asyncio.Lock`). Second cache for live AWS resource inventory (boto3 Describe* calls, 15 min TTL). Serves cost aggregations, MTD forecasting, anomaly detection (week-over-week delta), and optional resource mutation (EC2 terminate, RDS stop). Third path: **AI chat agent** (`POST /api/ai/chat`) — agentic tool-use loop (max 5 iterations, 6 read-only tools) calling in-memory pandas data, streaming final answer via SSE. Shares LLM proxy and agent architecture with azure-penny; key tool difference: `get_accounts` (AWS account/tag model) vs azure-penny's `get_resource_groups`. See `docs/agent-architecture.md`.
+- **Primary Tech Stack:** Python 3.11, FastAPI 0.136.1, uvicorn 0.47.0, pandas 3.0.3, pyarrow 24.0.0, boto3 ≥1.34, httpx (async HTTP for LLM proxy), Jinja2 3.1.6, python-dotenv 1.2.2; Terraform AWS provider ~5.0, ECS Fargate, ECR, ALB. **LLM:** Gemini 3.5 Flash via shared LiteLLM proxy `vertex.mysak.fun` (Cloudflare Tunnel + CF Access); identical proxy also used by azure-penny.
 
 ### 1. Infrastructure & Cloud Resources
 
@@ -163,6 +163,7 @@
 - **CUR Auto-Discovery:** `_discover_cur_files()` calls `sts:GetCallerIdentity` to determine account ID for bucket name, then lists S3 to find lexicographically latest billing period folder — adapts without hardcoded paths even if report name changes.
 - **Column Mapping Abstraction:** 28 CUR v2 column names mapped to 18 internal `C_*` constants, with `_apply_column_map()` normalizing across CUR schema variants (v1/v2 naming differences).
 - **App Inference for Untagged Resources:** Multi-step tag inference: `C_APP` → `C_PROJECT` → raw `resource_tags_user_app` → ARN pattern match (seip/penny/deep-mind) → name tag → "untagged". Avoids data quality gap from poor tagging hygiene.
+- **AI Agentic Loop (`main.py: api_ai_chat`, `_execute_chat_tool`):** `POST /api/ai/chat` returns `text/event-stream`. Iterates up to 5 times: POST to `vertex.mysak.fun/v1/chat/completions` with `tools`+`tool_choice: "auto"` → if `tool_calls` returned, execute each tool against in-process pandas DataFrame, append `role: tool` message → repeat. On plain text response, stream word-by-word (22 ms delay typewriter). Tools: `get_cost_summary`, `get_anomalies`, `get_accounts`, `get_breakdown`, `get_live_resources`, `get_daily_costs`. System prompt instructs always-call-tools-first and language detection (Czech ↔ English).
 
 ### 5. Potential Bottlenecks & Day-2 Technical Debt
 
@@ -171,14 +172,16 @@
 - No historical persistence — trends reset on container restart; no time-series database.
 - `DELETE /api/resource` endpoint can terminate EC2 / stop RDS with no approval workflow.
 - Pricing API (`pricing:GetProducts`) for spot hints has no throttle fallback.
+- **Simulated token streaming** — typewriter effect buffers full LLM response before sending first word; user sees blank for full LLM call duration (~5–10 s).
+- **Shared LLM proxy SPOF** — both aws-penny and azure-penny route through `vertex.mysak.fun`; proxy outage kills chat in both dashboards simultaneously.
 
 ---
 
 ## Project: azure-penny — Azure Cost Management Dashboard
 
 - **Business Domain:** FinOps / Azure Cloud Cost Visibility
-- **Core Architecture:** Azure Container App (scale-to-zero, 0–1 replicas) running FastAPI. Reads Azure Cost Management daily Parquet/CSV exports from Blob Storage (`cost-exports` container) into pandas in-memory cache (1 h TTL). Entra ID Easy Auth (ACA built-in) gates all traffic; `penny-admin` app role required for DELETE operations. Managed Identity for all Azure SDK calls — no static credentials.
-- **Primary Tech Stack:** Python 3.11, FastAPI 0.111.0, uvicorn 0.29.0, pandas 2.2.2, pyarrow 16.0.0, azure-storage-blob 12.19.1, azure-identity 1.16.0, azure-mgmt-resource 23.1.1, azure-mgmt-compute 31.0.0, azure-mgmt-storage 21.1.0, azure-monitor-query ≥1.4.0, Jinja2 3.1.4; Terraform azurerm 4.67.0, azuread ~3.0, azapi ~2.0
+- **Core Architecture:** Azure Container App (scale-to-zero, 0–1 replicas) running FastAPI. Reads Azure Cost Management daily Parquet/CSV exports from Blob Storage (`cost-exports` container) into pandas in-memory cache (1 h TTL). Entra ID Easy Auth (ACA built-in) gates all traffic; `penny-admin` app role required for DELETE operations. Managed Identity for all Azure SDK calls — no static credentials. Third path: **AI chat agent** (`POST /api/ai/chat`) — agentic tool-use loop (max 5 iterations, 6 read-only tools) calling in-memory pandas data, streaming final answer via SSE. Shares LLM proxy and agent architecture with aws-penny; key tool difference: `get_resource_groups` (Azure RG model) vs aws-penny's `get_accounts`. See `docs/agent-architecture.md`.
+- **Primary Tech Stack:** Python 3.11, FastAPI 0.111.0, uvicorn 0.29.0, pandas 2.2.2, pyarrow 16.0.0, azure-storage-blob 12.19.1, azure-identity 1.16.0, azure-mgmt-resource 23.1.1, azure-mgmt-compute 31.0.0, azure-mgmt-storage 21.1.0, azure-monitor-query ≥1.4.0, Jinja2 3.1.4, httpx (async HTTP for LLM proxy); Terraform azurerm 4.67.0, azuread ~3.0, azapi ~2.0. **LLM:** Gemini 3.5 Flash via shared LiteLLM proxy `vertex.mysak.fun` (Cloudflare Tunnel + CF Access); identical proxy also used by aws-penny.
 
 ### 1. Infrastructure & Cloud Resources
 
@@ -205,6 +208,7 @@
 - **AKS Managed RG Inference:** AKS creates MC_ resource groups for untagged resources (`mc_{parent-rg}_{cluster-name}_{region}`). `_infer_app_from_mc_rg()` regex-extracts `seip` from `mc_..._dev-seip-aks_...` — recovers cost attribution for infrastructure resources that Azure creates automatically.
 - **Cost Management API Fallback:** `_load_from_cost_management_api()` silently invoked when no blob exports exist — queries REST API directly for 90-day lookback (useful first 24 h after setup before first export arrives).
 - **Column Variance by Agreement Type:** Azure exports differ between EA, MCA, CSP. `COLUMN_MAP` with ordered fallback list: `PaygCostInBillingCurrency` → `CostInBillingCurrency` → `Cost` → `PreTaxCost` handles schema differences gracefully.
+- **AI Agentic Loop (`main.py: api_ai_chat`, `_execute_chat_tool`):** `POST /api/ai/chat` returns `text/event-stream`. Iterates up to 5 times: POST to `vertex.mysak.fun/v1/chat/completions` with `tools`+`tool_choice: "auto"` → if `tool_calls` returned, execute each tool against in-process pandas DataFrame, append `role: tool` message → repeat. On plain text response, stream word-by-word (22 ms delay typewriter). Tools: `get_cost_summary`, `get_anomalies`, `get_resource_groups`, `get_breakdown`, `get_live_resources`, `get_daily_costs`. System prompt instructs always-call-tools-first and language detection (Czech ↔ English).
 
 ### 5. Potential Bottlenecks & Day-2 Technical Debt
 
@@ -213,6 +217,8 @@
 - Easy Auth `X-MS-CLIENT-PRINCIPAL` header parsing is silent on decode/JSON errors — returns empty roles (access denied silently).
 - Cold start 5–10 s from scale-to-zero (Container Apps) — noticeable for interactive use.
 - No historical data persistence — all analysis in-memory, trends lost on restart.
+- **Simulated token streaming** — typewriter effect buffers full LLM response before sending first word; user sees blank for full LLM call duration (~5–10 s).
+- **Shared LLM proxy SPOF** — both azure-penny and aws-penny route through `vertex.mysak.fun`; proxy outage kills chat in both dashboards simultaneously.
 
 ---
 
