@@ -89,6 +89,49 @@
 
 ---
 
+## Project: vertexproxy (seip-models) — Internal LLM Gateway
+
+- **Business Domain:** Internal LLM Gateway / Model Proxy for SEIP Platform
+- **Core Architecture:** FastAPI service acting as a unified LLM gateway, routing inference requests to four backend provider types (AWS Bedrock, Google Gemini direct API, Google Vertex AI via service-account OAuth2, and any OpenAI-compatible "bridge" endpoint) based on model-ID prefix or explicit provider field. Config read at runtime from AWS SSM Parameter Store (`/dev/seip-models/config`); every call logged synchronously to DynamoDB (JSONL file fallback), enabling real-time cost accounting per model and per caller.
+- **Primary Tech Stack:** Python 3.11, FastAPI ≥0.111, uvicorn ≥0.29 (asyncio loop), Jinja2 ≥3.1, boto3 ≥1.34 (SSM + DynamoDB + Bedrock), google-auth ≥2.0 (Vertex AI SA OAuth2), requests ≥2.31 (Gemini REST + bridge REST), fastmcp ≥2.0 (MCP StreamableHTTP server), python-multipart ≥0.0.9
+
+### 1. Infrastructure & Cloud Resources
+
+- **Cloud Provider:** AWS (primary hosting, eu-central-1), Google Cloud (Vertex AI / Gemini as upstream)
+- **IaC Tool:** None in this repo — deployed as Docker container on EC2 `dev-app-host`; infrastructure managed by `SEIP/seip-infrastructure/`.
+- **Compute & Runtime:** Docker container on single EC2 `dev-app-host`; image in ECR `dev/seip-models`; managed as `systemd` unit `seip-models`; uvicorn bound `0.0.0.0:8184` asyncio loop; healthcheck `GET /health` every 30 s (timeout 5 s, 3 retries, 15 s start period).
+- **Networking & Security:** Inside SEIP VPC; external access via bastion EIP proxied through Cloudflare Access + Entra ID. GitHub Actions OIDC → IAM role `github-actions-deploy-role` (account `317781017752`) for ECR push + SSM `send-command` deploy. EC2 instance role requires: `ssm:GetParameter`, `ssm:PutParameter`, `dynamodb:PutItem/Query/Scan/BatchWriteItem`, `bedrock-runtime:InvokeModel`.
+- **Storage & Databases:** AWS SSM Parameter Store (`/dev/seip-models/config`, Type=String, Tier=Advanced) — sole config store for all provider credentials and model catalogue. DynamoDB `dev-seip-patterns` (PK `hash`, GSI `timeline-index` PK=`"models_log"` SK=`created_at`); 30-day TTL on log items. Fallback JSONL at `/data/llm_log.jsonl` inside container.
+
+### 2. CI/CD & GitOps Automation
+
+- **Pipelines:** GitHub Actions `deploy.yml`, push to `main` or dispatch. Steps: (1) OIDC auth to AWS; (2) ECR login; (3) Docker Buildx `linux/arm64` with GHA layer cache; (4) push `:<sha>` + `:latest`; (5) ECR lifecycle (keep last 3 tagged, expire untagged after 1 day); (6) locate `dev-app-host` by Name tag → `AWS-RunShellScript` SSM Run Command → `docker pull` + `systemctl restart seip-models` → poll `StatusDetails == "Success"`.
+- **Kubernetes Delivery:** N/A — bare EC2 systemd.
+- **Security Gates:** No linting/SAST/tests. Secrets in SSM at runtime only — never in repo.
+
+### 3. Monitoring, Reporting & Day-2 Operations
+
+- **Observability Stack:** Built-in web dashboard at `/` (`usage.html`): total calls, token counts, cost per model, per-caller breakdown, filterable call log. `/chat` UI for interactive testing. `/config` UI for provider/model CRUD. All data from in-memory deque (`_log`, maxlen=500) populated at startup from DynamoDB.
+- **Log Forwarding:** Two-tier: startup calls `_load_from_dynamo()`, fallback to `_load_from_file()` (`/data/llm_log.jsonl`). Every call completion fires `_save_to_dynamo()` + `_append_to_file()` synchronously. DynamoDB item key: `hash = "models_log#{ts}#{id}"`, TTL 30 days.
+- **Alerting Criteria:** None. Docker HEALTHCHECK marks container unhealthy after 3 failures but no CloudWatch alarm wired.
+
+### 4. Technical Challenges & Complex Workflows Resolved
+
+- **Dynamic Provider Management + Legacy Config Migration:** Original SSM config used flat keys (`gemini_api_key`, `bridge_url`, `vertex_project_id`). New `providers` list supports arbitrary named providers. `_migrate_legacy_providers()` auto-promotes flat keys into dynamic list, persists to SSM via `cfg.patch_config()` — idempotent, zero-downtime migration. `caller.py:call()` checks `cfg["providers"]` first, falls back to legacy flat keys. `tools/migrate_vertex_to_proxy.py` handles SSM rename.
+- **MCP Server via FastMCP StreamableHTTP:** Three MCP tools (`chat`, `list_models`, `get_log`) exposed via FastMCP ≥2.0 `StreamableHTTP`, mounted on the same uvicorn process at `/mcp` via `app.mount("/mcp", mcp.http_app(path="/"))`. Tool implementations reuse `caller.call()` and `llm_log.*` — consistent logging. `chat` tool accepts `caller_name` + `purpose` for MCP-vs-HTTP call traceability in DynamoDB.
+- **Google Vertex AI per-request OAuth2:** Every Vertex call does `service_account.Credentials.from_service_account_info()` + `creds.refresh(GoogleAuthRequest())`. SA credentials JSON in SSM, loaded per-request. Region-aware URL: `"global"` → `aiplatform.googleapis.com`, otherwise `{region}-aiplatform.googleapis.com`.
+
+### 5. Potential Bottlenecks & Day-2 Technical Debt
+
+- Single EC2, no load balancer, no ASG — `systemctl restart` during deploy = downtime; no HA.
+- Per-request Vertex token refresh — Google tokens valid 3600 s; fetching every call wastes 200–500 ms + hammers OAuth2 endpoint. Module-level cache with expiry needed.
+- Synchronous DynamoDB write on hot path — `_save_to_dynamo()` in `POST /api/chat` adds 5–20 ms latency per response. Should be background task.
+- `ssm:GetParameter` on every request — no in-process TTL cache; 10–30 ms RTT per call, 40 TPS SSM rate limit.
+- No auth on REST API / web UI — relies entirely on Cloudflare Access. Any VPC host can call `http://dev-app-host:8184/api/chat` without credentials.
+- In-memory `_log` deque (maxlen=500) is process-only — crash loses all in-flight entries.
+
+---
+
 ## Project: aws-penny — AWS Cost Management Dashboard
 
 - **Business Domain:** FinOps / AWS Cloud Cost Visibility
