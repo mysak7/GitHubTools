@@ -6,14 +6,17 @@
 
 ## 1. DNS — kde je autoritativní zóna
 
-DNS zóna `mysak.fun` je registrovaná u WEDOS, ale **nameservery ukazují na Cloudflare**. Cloudflare je tedy autoritativní — všechny záznamy se spravují Cloudflare providerem v Terraformu (`dns-mysak-cloudflare/main.tf`).
+DNS zóna `mysak.fun` je registrovaná u WEDOS, ale **nameservery ukazují na Cloudflare**. Cloudflare je tedy autoritativní — záznamy pro všechny projekty (SEIP, Penny) se spravují Cloudflare providerem v Terraformu (`dns-mysak-cloudflare/main.tf`).
 
+Souběžně existuje Azure DNS zóna `mysak.fun` (spravovaná `azurerm` providerem ve stejném repozitáři), ale ta **neobsahuje záznamy pro SEIP ani Penny projekty** — jen legacy záznamy (`llm.mysak.fun`, `grafana.llm.mysak.fun`, `cloudfire.mysak.fun`). Pro hlavní projekty je Azure DNS dekorativní.
 
 ```
 Registrátor (WEDOS) → NS záznamy → Cloudflare nameservery
                                           │
-                                    záznamy v Cloudflare
-                                    (spravuje TF provider cloudflare/cloudflare)
+                             záznamy pro SEIP + Penny v Cloudflare
+                             (TF provider cloudflare/cloudflare)
+
+Azure DNS zóna mysak.fun → jen llm / grafana.llm / cloudfire
 ```
 
 ---
@@ -217,15 +220,15 @@ Vertex Proxy je OpenAI-kompatibilní proxy pro Google Vertex AI (Gemini modely).
 
 ### Kde běží
 
-Na Azure VM `llm.mysak.fun` (IP `20.230.229.131`) jako Docker Compose stack.
+Na **samostatné VM** (`llm.mysak.fun`, IP `20.230.229.131`) jako Docker Compose stack — mimo infrastrukturu SEIP (není v AKS ani ECS, není spravovaná azure-seip nebo seip-infrastructure Terraformem).
 
 ### Komponenty stack
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Docker Compose na llm.mysak.fun                        │
+│  Docker Compose (standalone VM)                         │
 │                                                         │
-│  vertex-proxy (port 4001)                               │
+│  vertex-proxy (interní port 4001, nepublikovaný)        │
 │    LiteLLM + litellm_config.yaml                        │
 │    ↕ GOOGLE_APPLICATION_CREDENTIALS                     │
 │                                                         │
@@ -236,26 +239,50 @@ Na Azure VM `llm.mysak.fun` (IP `20.230.229.131`) jako Docker Compose stack.
 │  db (PostgreSQL)                                        │
 │    spend tracking, metriky LiteLLM                      │
 │                                                         │
-│  proxy-gui (Dozzle, port 4002)                          │
+│  proxy-gui (Dozzle, port 4002, interní)                 │
 │    log viewer pro vertex-proxy container                │
 │                                                         │
 │  cloudflared                                            │
-│    Cloudflare Tunnel → vystaví proxy ven bez otevřeného │
-│    portu na firewallu                                   │
+│    odchozí QUIC/WebSocket tunel → Cloudflare edge       │
+│    VM nemá otevřený žádný inbound port na internet      │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### TLS terminace pro Cloudflare Tunnel (jiný model než proxied záznamy)
+
+U ostatních projektů (SEIP, Penny) jde provoz přes proxied DNS záznam — CF edge se připojuje k IP originu. U Vertex Proxy je to **opačně**:
+
+```
+Klient (Penny app)
+  │  HTTPS — TLS terminace na CF edge
+  │  CF vydá vlastní certifikát (Universal Certificate pro mysak.fun)
+  ▼
+Cloudflare Edge
+  │  Cloudflare Tunnel protocol (QUIC / WebSocket)
+  │  cloudflared na VM udržuje perzistentní odchozí spojení
+  │  CF edge "zaparkuje" požadavek do tohoto tunelu
+  ▼
+cloudflared container (na VM)
+  │  HTTP na localhost:4001 — plain HTTP uvnitř Docker sítě
+  ▼
+vertex-proxy container (LiteLLM)
+  │  HTTPS
+  ▼
+Vertex AI API (GCP) → Gemini model
+```
+
+**Klíčový rozdíl oproti proxied záznamům**: U Tunnelu se na originu **nevyžaduje žádný TLS certifikát** — CF edge komunikuje s cloudflared přes tunel (šifrovaný na transportní vrstvě), ne přímým TCP spojením. Nastavení `ssl = full/flexible` se na tunnel provoz nevztahuje. TLS certifikát existuje pouze na CF edge (Cloudflare ho spravuje automaticky).
 
 ### Modely
 
 LiteLLM mapuje vlastní jména na Vertex AI modely. Klient volá `/v1/chat/completions` s `model: gemini-3.5-flash` a LiteLLM to přeloží na `vertex_ai/gemini-3.5-flash`. Vertex AI API vrátí odpověď, LiteLLM ji zabalí do OpenAI response formátu.
 
-### Expozice přes Cloudflare Tunnel (ne Access)
+### Autentizace na Vertex Proxy
 
-Vertex Proxy **nepoužívá Cloudflare Access**, ale **Cloudflare Tunnel**:
+Vertex Proxy **nepoužívá Cloudflare Access** (žádný `cloudflare_access_application` není definován pro vertex doménu). Zabezpečení je dvouvrstvé:
 
-- Cloudflare Tunnel = odchozí připojení z VM do Cloudflare edge, žádný inbound port není otevřen
-- Přístup je chráněn LiteLLM master key (`LITELLM_MASTER_KEY`) — Bearer token v Authorization headeru
-- Penny apps se autentizují vůči CF Access Service Tokenem (CF-Access-Client-Id/Secret headers) — to je Machine-to-Machine auth mechanismus CF Access
+- **LiteLLM master key** (`LITELLM_MASTER_KEY`) — Bearer token v Authorization headeru, autentizuje požadavek na LiteLLM úrovni
+- **CF-Access-Client-Id/Secret** — Cloudflare Service Token, M2M mechanismus; pokud by byl Tunnel i chráněn CF Access policy, toto by sloužilo jako strojová identita
 
 ### Jak Penny volá Vertex Proxy
 
@@ -297,16 +324,19 @@ LiteLLM → Vertex AI (Gemini)
 
 ---
 
-## 6. Přehled certifikátů
+## 6. Přehled certifikátů a TLS terminace
 
-| Doména | Certifikát na originu | Kdo ho vydal | TLS mód |
-|--------|-----------------------|-------------|---------|
-| aws-seip.mysak.fun | (bastion/nginx) Let's Encrypt nebo self-signed | certbot / nginx | full |
-| az-seip.mysak.fun | nginx-ingress cert-manager Let's Encrypt | cert-manager (AKS) | full |
-| aws-penny.mysak.fun | ALB — ACM cert pro aws-penny.mysak.fun | AWS ACM | flexible* |
-| az-penny.mysak.fun | ACA built-in cert pro *.azurecontainerapps.io | Azure | full |
+| Doména | TLS terminace | Certifikát na originu | TLS mód CF |
+|--------|---------------|-----------------------|------------|
+| aws-seip.mysak.fun | Cloudflare edge | Let's Encrypt (nginx/certbot na bastionu) | full |
+| az-seip.mysak.fun | Cloudflare edge | cert-manager Let's Encrypt (AKS nginx-ingress) | full |
+| aws-penny.mysak.fun | Cloudflare edge | ACM cert (vydaný pro aws-penny.mysak.fun, použitý jen na ALB HTTPS listeneru) | flexible\* |
+| az-penny.mysak.fun | Cloudflare edge | Built-in ACA cert (*.azurecontainerapps.io) | full |
+| vertex proxy (llm/tunnel) | Cloudflare edge | **žádný na originu** — Tunnel, CF cert auto | N/A (Tunnel) |
 
-\* CF → ALB teče HTTP (flexible), ALB sám má ACM cert jen pro HTTPS listener. Z pohledu klienta vždy HTTPS.
+\* `flexible`: CF → ALB teče HTTP. ALB má ACM cert, ale Cloudflare se k němu nepřipojuje přes HTTPS — připojuje se přes HTTP na port 80 (ALB pak interně přesměruje na 443 pro HTTPS komunikaci s ECS). Z pohledu klienta vždy HTTPS.
+
+**Souhrn kde TLS končí**: U všech projektů TLS terminuje na **Cloudflare edge**. Origin vidí buď plain HTTP (flexible) nebo HTTPS (full) — ale nikdy end-to-end TLS od klienta k originu. Pro Tunnel (vertex-proxy) TLS terminuje na CF edge a dál jde Tunnel protokol.
 
 ---
 
@@ -330,7 +360,7 @@ Vertex Proxy je chráněn jinak než aplikace — ne user flow (browser cookie),
 
 ### Cloudflare Tunnel vs otevřený port
 
-Vertex Proxy běží na VM bez otevřeného inbound portu. `cloudflared` vytvoří odchozí WebSocket tunel do Cloudflare. Snižuje attack surface — VM neexpozuje žádný port na internet.
+Vertex Proxy běží na standalone VM bez otevřeného inbound portu — žádný DNS proxied záznam, žádný Security Group inbound rule. `cloudflared` vytvoří odchozí QUIC/WebSocket tunel do CF edge. TLS certifikát na originu není potřeba (CF ho spravuje sám). Attack surface je minimální.
 
 ### LiteLLM jako abstrakční vrstva
 
@@ -351,20 +381,32 @@ CF Access blokuje neinteraktivní klienty (boty). Řešení: dedikovaná Access 
 ```
 Browser uživatele
       │
-      │ HTTPS → Cloudflare edge (TLS terminace zde)
+      │ HTTPS ──────────── TLS TERMINACE NA CF EDGE ───────────────
       ▼
+Cloudflare Edge
+      │
  [CF Access]  ← ověří session cookie
       │         pokud chybí → redirect na Entra ID login
       │
-      │ HTTPS nebo HTTP (dle ssl mode)
-      ▼
-    Origin (AWS EIP / AKS nginx / ALB / ACA)
+      ├── ssl=full  → HTTPS → Origin IP (AWS EIP / AKS nginx / ACA)
+      │                       origin musí mít platný cert
+      │
+      └── ssl=flexible → HTTP → ALB (aws-penny/penny)
+                                ALB interně přesměruje na HTTPS
       │
       └── aplikace (SEIP portal / Penny FastAPI)
                │
-               │ (pokud AI feature) HTTPS → Cloudflare Tunnel
-               ▼
-          Vertex Proxy (llm.mysak.fun)
-               │
-               └── Vertex AI API (GCP) → Gemini model
+               │ (pokud AI feature)
+               │ HTTPS → Cloudflare Edge
+               │               │
+               │        Cloudflare Tunnel (QUIC/WebSocket)
+               │               │ odchozí spojení z VM
+               │               ▼
+               │        cloudflared container (standalone VM)
+               │               │ HTTP localhost:4001
+               │               ▼
+               └────────> vertex-proxy (LiteLLM)
+                               │ HTTPS
+                               ▼
+                        Vertex AI API (GCP) → Gemini model
 ```
