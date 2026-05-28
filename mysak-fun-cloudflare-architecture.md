@@ -8,7 +8,6 @@
 
 DNS zóna `mysak.fun` je registrovaná u WEDOS, ale **nameservery ukazují na Cloudflare**. Cloudflare je tedy autoritativní — všechny záznamy se spravují Cloudflare providerem v Terraformu (`dns-mysak-cloudflare/main.tf`).
 
-Souběžně existuje Azure DNS zona `mysak.fun` (Terraform `azurerm_dns_zone`), ale ta je dekorativní — záznamy z ní byly migrované do Cloudflare a Azure DNS se jen drží kvůli několika legacy záznamům (`llm`, `grafana.llm`, `cloudfire`).
 
 ```
 Registrátor (WEDOS) → NS záznamy → Cloudflare nameservery
